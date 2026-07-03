@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>PrecisionShot House of Quality</title>
+	<style>
+		:root {
+			--hoq-purple: #8e8cf6;
+			--hoq-purple-soft: #d9d8ff;
+			--hoq-purple-softer: #eeeeff;
+			--hoq-gray: #eef0f4;
+			--hoq-gray-dark: #dce1e8;
+			--hoq-border: #111827;
+			--hoq-text: #101827;
+			--hoq-muted: #475569;
+			--hoq-white: #ffffff;
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		body {
+			margin: 0;
+			background: #f8fafc;
+			color: var(--hoq-text);
+			font-family: 'Times New Roman', Times, serif;
+		}
+
+		.hoq-section {
+			padding: 32px 18px;
+			background: #f8fafc;
+		}
+
+		.hoq-shell {
+			max-width: 1500px;
+			margin: 0 auto;
+			padding: 28px;
+			border: 1px solid #d8dee9;
+			border-radius: 18px;
+			background: #ffffff;
+			box-shadow: 0 18px 45px rgba(15, 23, 42, 0.08);
+		}
+
+		.hoq-scroll {
+			overflow-x: auto;
+			padding: 4px 4px 16px;
+		}
+
+		.hoq-stage {
+			position: relative;
+			isolation: isolate;
+			width: 1420px;
+			padding-top: 420px;
+			margin: 0 auto;
+			z-index: 0;
+		}
+
+		.hoq-legend {
+			position: absolute;
+			top: 10px;
+			left: 20px;
+			z-index: 5;
+			width: 285px;
+			padding: 14px 18px;
+			border: 2px solid var(--hoq-border);
+			border-radius: 10px;
+			background: #ffffff;
+			font-size: 16px;
+			line-height: 1.45;
+		}
+
+		.hoq-legend strong {
+			display: block;
+			margin-bottom: 8px;
+			text-align: center;
+			font-size: 17px;
+			font-weight: 700;
+			letter-spacing: 0.03em;
+		}
+
+		.legend-row {
+			display: grid;
+			grid-template-columns: 26px 1fr;
+			align-items: center;
+			gap: 8px;
+			margin: 5px 0;
+		}
+
+		.symbol {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 22px;
+			font-weight: 400;
+			line-height: 1;
+		}
+
+		.hoq-roof {
+			position: absolute;
+			top: 153px;
+			left: 512px;
+			z-index: 1;
+			width: 640px;
+			height: 360px;
+			overflow: visible;
+			pointer-events: none;
+			transform: scale(0.93);
+			transform-origin: top center;
+		}
+
+		.hoq-roof text {
+			font-family: 'Times New Roman', Times, serif;
+			font-size: 25px;
+			font-weight: 400;
+			fill: var(--hoq-text);
+			dominant-baseline: middle;
+			text-anchor: middle;
+		}
+
+		.hoq-table {
+			position: relative;
+			z-index: 3;
+			width: 1420px;
+			border-collapse: collapse;
+			table-layout: fixed;
+			border: 2px solid var(--hoq-border);
+			background: var(--hoq-gray);
+		}
+
+		.hoq-table th,
+		.hoq-table td {
+			border: 2px solid var(--hoq-border);
+			padding: 8px 8px;
+			text-align: center;
+			vertical-align: middle;
+			font-size: 16px;
+			font-weight: 400;
+			line-height: 1.2;
+		}
+
+		.hoq-table th {
+			font-weight: 400;
+		}
+
+		.col-customer {
+			width: 292px;
+		}
+
+		.col-rating {
+			width: 110px;
+		}
+
+		.col-percent {
+			width: 130px;
+		}
+
+		.col-eng {
+			width: 84px;
+		}
+
+		.col-comp {
+			width: 100px;
+		}
+
+		.hoq-purple {
+			background: linear-gradient(180deg, var(--hoq-purple) 0%, #a7a5ff 100%);
+		}
+
+		.hoq-purple-soft {
+			background: var(--hoq-purple-soft);
+		}
+
+		.hoq-light {
+			background: var(--hoq-purple-softer);
+		}
+
+		.hoq-gray {
+			background: var(--hoq-gray);
+		}
+
+		.customer-title {
+			height: 150px;
+			padding-left: 26px !important;
+			text-align: left !important;
+			font-size: 24px !important;
+			background: linear-gradient(135deg, #f0efff 0%, #ffffff 100%);
+		}
+
+		.target-title {
+			font-size: 19px !important;
+			background: var(--hoq-purple-soft);
+		}
+
+		.side-header {
+			font-size: 15px !important;
+			background: linear-gradient(180deg, var(--hoq-purple) 0%, #a9a7ff 100%);
+		}
+
+		.competitor-title {
+			height: 84px;
+			background: linear-gradient(180deg, var(--hoq-purple) 0%, #aaa8ff 100%);
+			font-size: 20px !important;
+		}
+
+		.competitor-title small {
+			display: block;
+			margin-top: 8px;
+			font-size: 13px;
+			font-style: italic;
+			font-weight: 400;
+		}
+
+		.eng-head {
+			height: 185px;
+			background: var(--hoq-purple-softer);
+		}
+
+		.vertical-text {
+			display: inline-block;
+			writing-mode: vertical-rl;
+			transform: rotate(180deg);
+			white-space: normal;
+			font-size: 16px;
+			font-weight: 400;
+			line-height: 1.1;
+		}
+
+		.target-cell {
+			height: 136px;
+			padding: 6px !important;
+			background: var(--hoq-gray);
+			font-size: 13px !important;
+			font-weight: 400;
+			line-height: 1.15 !important;
+		}
+
+		.direction {
+			display: block;
+			margin-bottom: 8px;
+			font-size: 26px;
+			font-weight: 400;
+			line-height: 1;
+		}
+
+		.customer-row th {
+			padding-left: 18px !important;
+			text-align: left !important;
+			background: var(--hoq-purple-soft);
+			font-size: 17px;
+			font-weight: 400;
+		}
+
+		.customer-row td {
+			background: var(--hoq-gray);
+		}
+
+		.customer-row:nth-child(even) td,
+		.customer-row:nth-child(even) th {
+			background: #f7f7ff;
+		}
+
+		.matrix-symbol {
+			font-size: 25px !important;
+			font-weight: 400;
+			line-height: 1;
+		}
+
+		.summary-label {
+			padding-right: 24px !important;
+			text-align: right !important;
+			background: linear-gradient(180deg, var(--hoq-purple) 0%, #aaa8ff 100%) !important;
+			font-size: 20px !important;
+			font-weight: 400 !important;
+		}
+
+		.summary-value {
+			background: #ffffff !important;
+			font-size: 18px !important;
+			font-weight: 400;
+		}
+
+		.summary-blank {
+			background: var(--hoq-gray-dark) !important;
+		}
+
+		.hoq-note {
+			position: relative;
+			z-index: 2;
+			width: 1420px;
+			margin: 14px auto 0;
+			text-align: center;
+			font-size: 14px;
+			font-style: italic;
+			color: var(--hoq-muted);
+		}
+
+		@media (max-width: 900px) {
+			.hoq-shell {
+				padding: 18px 10px;
+			}
+
+			.hoq-section {
+				padding: 18px 8px;
+			}
+		}
+	</style>
+</head>
+<body>
+	<section class="hoq-section">
+		<div class="hoq-shell">
+
+			<div class="hoq-scroll">
+				<div class="hoq-stage">
+					<div class="hoq-legend" aria-label="Relationship legend">
+						<strong>RELATIONSHIP LEGEND</strong>
+						<div class="legend-row"><span class="symbol">●</span><span>Strong relationship = 9</span></div>
+						<div class="legend-row"><span class="symbol">○</span><span>Medium relationship = 3</span></div>
+						<div class="legend-row"><span class="symbol">△</span><span>Weak relationship = 1</span></div>
+						<div class="legend-row"><span class="symbol">—</span><span>No meaningful relationship = 0</span></div>
+					</div>
+
+					<svg class="hoq-roof" viewBox="0 0 640 360" role="img" aria-label="Engineering correlation roof matrix">
+						<defs>
+							<polygon id="roof-cell" points="0,-48 48,0 0,48 -48,0" fill="#ffffff" stroke="#111827" stroke-width="2" />
+						</defs>
+
+						<!-- Top row -->
+						<use href="#roof-cell" x="320" y="48" /><text x="320" y="48">0</text>
+
+						<!-- Row 2 -->
+						<use href="#roof-cell" x="272" y="96" /><text x="272" y="96">0</text>
+						<use href="#roof-cell" x="368" y="96" /><text x="368" y="96">+</text>
+
+						<!-- Row 3 -->
+						<use href="#roof-cell" x="224" y="144" /><text x="224" y="144">+</text>
+						<use href="#roof-cell" x="320" y="144" /><text x="320" y="144">+</text>
+						<use href="#roof-cell" x="416" y="144" /><text x="416" y="144">-</text>
+
+						<!-- Row 4 -->
+						<use href="#roof-cell" x="176" y="192" /><text x="176" y="192">-</text>
+						<use href="#roof-cell" x="272" y="192" /><text x="272" y="192">-</text>
+						<use href="#roof-cell" x="368" y="192" /><text x="368" y="192">-</text>
+						<use href="#roof-cell" x="464" y="192" /><text x="464" y="192">+</text>
+
+						<!-- Bottom correlation row -->
+						<use href="#roof-cell" x="128" y="240" /><text x="128" y="240">-</text>
+						<use href="#roof-cell" x="224" y="240" /><text x="224" y="240">-</text>
+						<use href="#roof-cell" x="320" y="240" /><text x="320" y="240">0</text>
+						<use href="#roof-cell" x="416" y="240" /><text x="416" y="240">+</text>
+						<use href="#roof-cell" x="512" y="240" /><text x="512" y="240">+</text>
+
+						<!-- Empty base row, like the standard House of Quality template -->
+						<use href="#roof-cell" x="80" y="288" />
+						<use href="#roof-cell" x="176" y="288" />
+						<use href="#roof-cell" x="272" y="288" />
+						<use href="#roof-cell" x="368" y="288" />
+						<use href="#roof-cell" x="464" y="288" />
+						<use href="#roof-cell" x="560" y="288" />
+					</svg>
+
+					<table class="hoq-table" aria-label="PrecisionShot House of Quality QFD matrix">
+						<colgroup>
+							<col class="col-customer" />
+							<col class="col-rating" />
+							<col class="col-percent" />
+							<col class="col-eng" />
+							<col class="col-eng" />
+							<col class="col-eng" />
+							<col class="col-eng" />
+							<col class="col-eng" />
+							<col class="col-eng" />
+							<col class="col-comp" />
+							<col class="col-comp" />
+							<col class="col-comp" />
+						</colgroup>
+
+						<thead>
+							<tr>
+								<th class="customer-title">Customer requirements</th>
+								<th class="side-header" rowspan="2">Customer<br />importance rating<br /><small>(1 = low, 5 = high)</small></th>
+								<th class="side-header" rowspan="2">Percent of customer<br />importance rating</th>
+								<th class="eng-head"><span class="vertical-text">Sensor spacing / array density</span></th>
+								<th class="eng-head"><span class="vertical-text">Shot detection response time</span></th>
+								<th class="eng-head"><span class="vertical-text">Battery life / power efficiency</span></th>
+								<th class="eng-head"><span class="vertical-text">Ambient light filtering / calibration</span></th>
+								<th class="eng-head"><span class="vertical-text">Wireless / app update delay</span></th>
+								<th class="eng-head"><span class="vertical-text">User interface / training mode control</span></th>
+								<th class="competitor-title" colspan="3">Competitor research <small>1 = poor, 5 = excellent</small></th>
+							</tr>
+
+							<tr>
+								<th class="target-title">Design direction &amp; target</th>
+								<th class="target-cell"><span class="direction">▼</span>Smaller sensor spacing is better; dense center zone preferred</th>
+								<th class="target-cell"><span class="direction">▼</span>Less than 10 ms</th>
+								<th class="target-cell"><span class="direction">▲</span>At least 10 hours</th>
+								<th class="target-cell"><span class="direction">▲</span>Detect laser shots while rejecting ambient light</th>
+								<th class="target-cell"><span class="direction">▼</span>App updates in less than 1 second; wireless range up to 30 m</th>
+								<th class="target-cell"><span class="direction">▲</span>Display, buttons, calibration, reset, and multiple training modes</th>
+								<th class="target-cell">LaserLyte-style<br />basic laser target</th>
+								<th class="target-cell">Mantis BlackbeardX-style<br />app system</th>
+								<th class="target-cell">PrecisionShot<br />target goal</th>
+							</tr>
+						</thead>
+
+						<tbody>
+							<tr class="customer-row">
+								<th>1. Accurate shot detection</th>
+								<td>5</td>
+								<td>20%</td>
+								<td class="matrix-symbol">●</td>
+								<td class="matrix-symbol">○</td>
+								<td class="matrix-symbol">—</td>
+								<td class="matrix-symbol">●</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">—</td>
+								<td>2</td>
+								<td>4</td>
+								<td>5</td>
+							</tr>
+
+							<tr class="customer-row">
+								<th>2. Fast real-time feedback</th>
+								<td>4</td>
+								<td>16%</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">●</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">○</td>
+								<td class="matrix-symbol">△</td>
+								<td>5</td>
+								<td>3</td>
+								<td>5</td>
+							</tr>
+
+							<tr class="customer-row">
+								<th>3. Easy to use</th>
+								<td>4</td>
+								<td>16%</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">○</td>
+								<td class="matrix-symbol">○</td>
+								<td class="matrix-symbol">○</td>
+								<td class="matrix-symbol">○</td>
+								<td class="matrix-symbol">●</td>
+								<td>5</td>
+								<td>3</td>
+								<td>4</td>
+							</tr>
+
+							<tr class="customer-row">
+								<th>4. Portable and rechargeable</th>
+								<td>3</td>
+								<td>12%</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">●</td>
+								<td class="matrix-symbol">—</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">○</td>
+								<td>4</td>
+								<td>4</td>
+								<td>4</td>
+							</tr>
+
+							<tr class="customer-row">
+								<th>5. Reliable in different lighting conditions</th>
+								<td>5</td>
+								<td>20%</td>
+								<td class="matrix-symbol">○</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">—</td>
+								<td class="matrix-symbol">●</td>
+								<td class="matrix-symbol">—</td>
+								<td class="matrix-symbol">△</td>
+								<td>4</td>
+								<td>2</td>
+								<td>4</td>
+							</tr>
+
+							<tr class="customer-row">
+								<th>6. Good wireless/app integration</th>
+								<td>4</td>
+								<td>16%</td>
+								<td class="matrix-symbol">—</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">△</td>
+								<td class="matrix-symbol">—</td>
+								<td class="matrix-symbol">●</td>
+								<td class="matrix-symbol">○</td>
+								<td>1</td>
+								<td>5</td>
+								<td>4</td>
+							</tr>
+						</tbody>
+
+						<tfoot>
+							<tr>
+								<th class="summary-label" colspan="3">Importance rating</th>
+								<td class="summary-value">71</td>
+								<td class="summary-value">75</td>
+								<td class="summary-value">47</td>
+								<td class="summary-value">106</td>
+								<td class="summary-value">68</td>
+								<td class="summary-value">66</td>
+								<td class="summary-blank" colspan="3" rowspan="2"></td>
+							</tr>
+
+							<tr>
+								<th class="summary-label" colspan="3">Percent of importance</th>
+								<td class="summary-value">16%</td>
+								<td class="summary-value">17%</td>
+								<td class="summary-value">11%</td>
+								<td class="summary-value">25%</td>
+								<td class="summary-value">16%</td>
+								<td class="summary-value">15%</td>
+							</tr>
+						</tfoot>
+					</table>
+
+					<p class="hoq-note">Note: Design direction uses ▲ for “higher is better” and ▼ for “lower is better.” Correlations in the roof use + for positive, - for negative, and 0 for no correlation.</p>
+				</div>
+			</div>
+		</div>
+	</section>
+</body>
+</html>
