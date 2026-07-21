@@ -35,6 +35,13 @@
           "image": "./assets/images/splash-icon.png",
           "imageWidth": 76
         }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "neverForLocation": true,
+          "bluetoothAlwaysPermission": "Allow PrecisionShot to find and connect to your training target."
+        }
       ]
     ],
     "experiments": {

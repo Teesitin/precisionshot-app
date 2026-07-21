@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+
+import { type PrecisionShotPacket, usePrecisionShotBle } from '@/hooks/usePrecisionShotBle';
 
 type Unit = 'cm' | 'in';
 
@@ -38,6 +40,37 @@ const totalTransistors = transistorGridSize * transistorGridSize;
 
 const historyPageSize = 5;
 
+const getTransistorHit = (x: number, y: number): TransistorHit => {
+  const normalizedX = (x + simulatedRadiusPx) / (simulatedRadiusPx * 2);
+  const normalizedY = (y + simulatedRadiusPx) / (simulatedRadiusPx * 2);
+
+  const col = Math.min(
+    transistorGridSize - 1,
+    Math.max(0, Math.round(normalizedX * (transistorGridSize - 1))),
+  );
+  const row = Math.min(
+    transistorGridSize - 1,
+    Math.max(0, Math.round(normalizedY * (transistorGridSize - 1))),
+  );
+
+  const index = row * transistorGridSize + col;
+
+  return {
+    row,
+    col,
+    index,
+    displayNumber: index + 1,
+    debugHex: `0x${index.toString(16).toUpperCase().padStart(4, '0')}`,
+    debugBinary: `0b${index.toString(2).padStart(16, '0')}`,
+  };
+};
+
+type ShotInput = {
+  score?: number;
+  x?: number;
+  y?: number;
+};
+
 export default function HomeScreen() {
   const [isDark, setIsDark] = useState(true);
   const [unit, setUnit] = useState<Unit>('cm');
@@ -54,28 +87,6 @@ export default function HomeScreen() {
 
   const unitLabel = unit === 'cm' ? 'cm' : 'in';
 
-  const getTransistorHit = (x: number, y: number): TransistorHit => {
-    const normalizedX = (x + simulatedRadiusPx) / (simulatedRadiusPx * 2);
-    const normalizedY = (y + simulatedRadiusPx) / (simulatedRadiusPx * 2);
-
-    const col = Math.min(transistorGridSize - 1, Math.max(0, Math.round(normalizedX * (transistorGridSize - 1))));
-    const row = Math.min(transistorGridSize - 1, Math.max(0, Math.round(normalizedY * (transistorGridSize - 1))));
-
-    const index = row * transistorGridSize + col;
-    const displayNumber = index + 1;
-  const debugHex = `0x${index.toString(16).toUpperCase().padStart(4, '0')}`;
-  const debugBinary = `0b${index.toString(2).padStart(16, '0')}`;
-
-    return {
-      row,
-      col,
-      index,
-      displayNumber,
-      debugHex,
-      debugBinary,
-    };
-  };
-
   const stats = useMemo(() => {
     const totalShots = shots.length;
     const totalScore = shots.reduce((sum, shot) => sum + shot.score, 0);
@@ -91,14 +102,23 @@ export default function HomeScreen() {
     };
   }, [shots]);
 
-  const simulateShot = () => {
+  const recordShot = useCallback((input: ShotInput = {}) => {
     const angle = Math.random() * Math.PI * 2;
-    const radius = Math.sqrt(Math.random()) * simulatedRadiusPx;
+    const incomingScore =
+      typeof input.score === 'number' ? Math.min(10, Math.max(0, Math.round(input.score))) : undefined;
+    const hasIncomingCoordinates = typeof input.x === 'number' && typeof input.y === 'number';
 
-    const x = Math.round(Math.cos(angle) * radius);
-    const y = Math.round(Math.sin(angle) * radius);
+    let radius = Math.sqrt(Math.random()) * simulatedRadiusPx;
+    if (incomingScore !== undefined && !hasIncomingCoordinates) {
+      const minimumRadius = Math.min(simulatedRadiusPx, (10 - incomingScore) * 10);
+      const maximumRadius = Math.min(simulatedRadiusPx, minimumRadius + 9);
+      radius = minimumRadius + Math.random() * (maximumRadius - minimumRadius);
+    }
+
+    const x = Math.round(hasIncomingCoordinates ? input.x! : Math.cos(angle) * radius);
+    const y = Math.round(hasIncomingCoordinates ? input.y! : Math.sin(angle) * radius);
     const distancePx = Math.round(Math.sqrt(x * x + y * y));
-    const score = Math.max(0, 10 - Math.floor(distancePx / 10));
+    const score = incomingScore ?? Math.max(0, 10 - Math.floor(distancePx / 10));
     const transistor = getTransistorHit(x, y);
 
     const newShot: Shot = {
@@ -117,7 +137,28 @@ export default function HomeScreen() {
 
     setShots((currentShots) => [newShot, ...currentShots]);
     setHistoryPage(0);
-  };
+  }, []);
+
+  const simulateShot = () => recordShot();
+
+  const handleBluetoothShot = useCallback(
+    (packet: PrecisionShotPacket) => {
+      recordShot({ score: packet.score, x: packet.x, y: packet.y });
+    },
+    [recordShot],
+  );
+
+  const {
+    adapterState,
+    connect,
+    connectedDevice,
+    connectionState,
+    devices,
+    disconnect,
+    error: bluetoothError,
+    isScanning,
+    scan,
+  } = usePrecisionShotBle(handleBluetoothShot);
 
   const resetShots = () => {
     setShots([]);
@@ -281,34 +322,124 @@ export default function HomeScreen() {
         <View style={[styles.menuPanel, { backgroundColor: theme.card, borderColor: theme.border }]}>
           <Text style={[styles.menuTitle, { color: theme.text }]}>Settings</Text>
 
-          <View style={styles.menuSection}>
-            <Text style={[styles.menuLabel, { color: theme.muted }]}>Theme</Text>
+          <ScrollView
+            style={styles.menuScroll}
+            contentContainerStyle={styles.menuScrollContent}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator={false}
+          >
+            <View style={styles.menuSection}>
+              <Text style={[styles.menuLabel, { color: theme.muted }]}>Theme</Text>
 
-            <Pressable style={[styles.menuOption, { borderColor: theme.border }]} onPress={() => setIsDark(!isDark)}>
-              <Text style={[styles.menuOptionText, { color: theme.text }]}>{isDark ? 'Dark Mode' : 'Light Mode'}</Text>
-              <Text style={[styles.menuOptionPill, { backgroundColor: accent }]}>Toggle</Text>
-            </Pressable>
-          </View>
-
-          <View style={styles.menuSection}>
-            <Text style={[styles.menuLabel, { color: theme.muted }]}>Distance Units</Text>
-
-            <View style={styles.unitRow}>
-              <Pressable
-                style={[styles.unitButton, { borderColor: theme.border }, unit === 'cm' && styles.activeUnitButton]}
-                onPress={() => setUnit('cm')}
-              >
-                <Text style={[styles.unitButtonText, { color: unit === 'cm' ? '#111827' : theme.text }]}>cm</Text>
-              </Pressable>
-
-              <Pressable
-                style={[styles.unitButton, { borderColor: theme.border }, unit === 'in' && styles.activeUnitButton]}
-                onPress={() => setUnit('in')}
-              >
-                <Text style={[styles.unitButtonText, { color: unit === 'in' ? '#111827' : theme.text }]}>in</Text>
+              <Pressable style={[styles.menuOption, { borderColor: theme.border }]} onPress={() => setIsDark(!isDark)}>
+                <Text style={[styles.menuOptionText, { color: theme.text }]}>{isDark ? 'Dark Mode' : 'Light Mode'}</Text>
+                <Text style={[styles.menuOptionPill, { backgroundColor: accent }]}>Toggle</Text>
               </Pressable>
             </View>
-          </View>
+
+            <View style={styles.menuSection}>
+              <Text style={[styles.menuLabel, { color: theme.muted }]}>Distance Units</Text>
+
+              <View style={styles.unitRow}>
+                <Pressable
+                  style={[styles.unitButton, { borderColor: theme.border }, unit === 'cm' && styles.activeUnitButton]}
+                  onPress={() => setUnit('cm')}
+                >
+                  <Text style={[styles.unitButtonText, { color: unit === 'cm' ? '#111827' : theme.text }]}>cm</Text>
+                </Pressable>
+
+                <Pressable
+                  style={[styles.unitButton, { borderColor: theme.border }, unit === 'in' && styles.activeUnitButton]}
+                  onPress={() => setUnit('in')}
+                >
+                  <Text style={[styles.unitButtonText, { color: unit === 'in' ? '#111827' : theme.text }]}>in</Text>
+                </Pressable>
+              </View>
+            </View>
+
+            <View style={styles.menuSection}>
+              <Text style={[styles.menuLabel, { color: theme.muted }]}>Bluetooth</Text>
+
+              <View style={[styles.bluetoothStatus, { borderColor: theme.border }]}>
+                <View
+                  style={[
+                    styles.bluetoothStatusDot,
+                    { backgroundColor: connectedDevice ? '#22c55e' : isScanning ? accent : theme.muted },
+                  ]}
+                />
+                <View style={styles.bluetoothStatusText}>
+                  <Text style={[styles.bluetoothStatusTitle, { color: theme.text }]}>
+                    {connectedDevice
+                      ? `Connected to ${connectedDevice.name}`
+                      : connectionState === 'connecting'
+                        ? 'Connecting…'
+                        : isScanning
+                          ? 'Scanning nearby devices…'
+                          : 'Not connected'}
+                  </Text>
+                  <Text style={[styles.bluetoothStatusMeta, { color: theme.muted }]}>Adapter: {adapterState}</Text>
+                </View>
+              </View>
+
+              {connectedDevice ? (
+                <Pressable
+                  style={[styles.bluetoothButton, styles.disconnectButton]}
+                  onPress={() => void disconnect()}
+                >
+                  <Text style={styles.disconnectButtonText}>Disconnect</Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={[styles.bluetoothButton, { backgroundColor: accent }, isScanning && styles.disabledButton]}
+                  disabled={isScanning || connectionState === 'connecting'}
+                  onPress={() => void scan()}
+                >
+                  <Text style={styles.bluetoothButtonText}>
+                    {isScanning ? 'Scanning…' : devices.length > 0 ? 'Scan Again' : 'Find Bluetooth Devices'}
+                  </Text>
+                </Pressable>
+              )}
+
+              {bluetoothError && (
+                <View style={styles.bluetoothError}>
+                  <Text style={styles.bluetoothErrorText}>{bluetoothError}</Text>
+                </View>
+              )}
+
+              {!connectedDevice && devices.length > 0 && (
+                <>
+                  <Text style={[styles.deviceListLabel, { color: theme.muted }]}>Nearby BLE devices</Text>
+                  <View>
+                    {devices.map((device) => (
+                      <Pressable
+                        key={device.id}
+                        style={[styles.deviceRow, { borderColor: theme.border }]}
+                        disabled={connectionState === 'connecting'}
+                        onPress={() => void connect(device.id)}
+                      >
+                        <View style={styles.deviceInfo}>
+                          <Text style={[styles.deviceName, { color: theme.text }]} numberOfLines={1}>
+                            {device.name}
+                          </Text>
+                          <Text style={[styles.deviceId, { color: theme.muted }]} numberOfLines={1}>
+                            {device.id}
+                          </Text>
+                        </View>
+                        <Text
+                          style={[
+                            styles.deviceSignal,
+                            { color: device.name === 'PrecisionShot' ? accent : theme.muted },
+                          ]}
+                        >
+                          {device.rssi === null ? 'Connect' : `${device.rssi} dBm`}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </>
+              )}
+            </View>
+          </ScrollView>
         </View>
       )}
 
@@ -625,9 +756,10 @@ const styles = StyleSheet.create({
   },
   menuPanel: {
     position: 'absolute',
+    left: 20,
     right: 20,
     bottom: 98,
-    width: 245,
+    maxHeight: '78%',
     borderWidth: 1,
     borderRadius: 24,
     padding: 18,
@@ -641,6 +773,13 @@ const styles = StyleSheet.create({
   menuTitle: {
     fontSize: 20,
     fontWeight: '900',
+  },
+  menuScroll: {
+    flexShrink: 1,
+  },
+  menuScrollContent: {
+    gap: 18,
+    paddingBottom: 2,
   },
   menuSection: {
     gap: 10,
@@ -689,6 +828,92 @@ const styles = StyleSheet.create({
   },
   unitButtonText: {
     fontSize: 14,
+    fontWeight: '900',
+  },
+  bluetoothStatus: {
+    minHeight: 58,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  bluetoothStatusDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  bluetoothStatusText: {
+    flex: 1,
+  },
+  bluetoothStatusTitle: {
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  bluetoothStatusMeta: {
+    marginTop: 3,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  bluetoothButton: {
+    alignItems: 'center',
+    borderRadius: 14,
+    paddingVertical: 12,
+  },
+  bluetoothButtonText: {
+    color: '#111827',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  disconnectButton: {
+    borderWidth: 1,
+    borderColor: '#ef4444',
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+  },
+  disconnectButtonText: {
+    color: '#ef4444',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  bluetoothError: {
+    borderRadius: 12,
+    padding: 10,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+  },
+  bluetoothErrorText: {
+    color: '#ef4444',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
+  },
+  deviceListLabel: {
+    fontSize: 11,
+    fontWeight: '900',
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
+  deviceRow: {
+    minHeight: 56,
+    borderTopWidth: 1,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  deviceInfo: {
+    flex: 1,
+  },
+  deviceName: {
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  deviceId: {
+    marginTop: 3,
+    fontSize: 10,
+  },
+  deviceSignal: {
+    fontSize: 11,
     fontWeight: '900',
   },
 });
