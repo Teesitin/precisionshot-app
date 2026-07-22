@@ -1,7 +1,11 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { type PrecisionShotPacket, usePrecisionShotBle } from '@/hooks/usePrecisionShotBle';
+import {
+  type BleDiagnostics,
+  type PrecisionShotPacket,
+  usePrecisionShotBle,
+} from '@/hooks/usePrecisionShotBle';
 
 type Unit = 'cm' | 'in';
 
@@ -40,6 +44,30 @@ const totalTransistors = transistorGridSize * transistorGridSize;
 
 const historyPageSize = 5;
 
+function formatElapsed(milliseconds: number) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
+}
+
+function formatBytes(bytes: number) {
+  if (bytes < 1_024) return `${bytes} B`;
+  return `${(bytes / 1_024).toFixed(1)} KB`;
+}
+
+function getSignalQuality(rssi: number | null) {
+  if (rssi === null) return { label: 'Measuring', color: '#94a3b8' };
+  if (rssi >= -55) return { label: 'Excellent', color: '#22c55e' };
+  if (rssi >= -67) return { label: 'Good', color: '#84cc16' };
+  if (rssi >= -75) return { label: 'Fair', color: '#f59e0b' };
+  return { label: 'Weak', color: '#ef4444' };
+}
+
 const getTransistorHit = (x: number, y: number): TransistorHit => {
   const normalizedX = (x + simulatedRadiusPx) / (simulatedRadiusPx * 2);
   const normalizedY = (y + simulatedRadiusPx) / (simulatedRadiusPx * 2);
@@ -77,6 +105,7 @@ export default function HomeScreen() {
   const [shots, setShots] = useState<Shot[]>([]);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [historyPage, setHistoryPage] = useState(0);
+  const [diagnosticClock, setDiagnosticClock] = useState(Date.now());
 
   const theme = isDark ? darkTheme : lightTheme;
 
@@ -150,15 +179,27 @@ export default function HomeScreen() {
 
   const {
     adapterState,
+    bleServiceUuid,
+    bleTxUuid,
+    clearDiagnosticLogs,
     connect,
     connectedDevice,
     connectionState,
+    diagnostics,
     devices,
     disconnect,
     error: bluetoothError,
     isScanning,
     scan,
   } = usePrecisionShotBle(handleBluetoothShot);
+
+  useEffect(() => {
+    if (!connectedDevice) return;
+
+    setDiagnosticClock(Date.now());
+    const timer = setInterval(() => setDiagnosticClock(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [connectedDevice]);
 
   const resetShots = () => {
     setShots([]);
@@ -316,6 +357,19 @@ export default function HomeScreen() {
             </>
           )}
         </View>
+
+        {connectedDevice && (
+          <BluetoothDiagnosticsPanel
+            adapterState={adapterState}
+            characteristicUuid={bleTxUuid}
+            clearLogs={clearDiagnosticLogs}
+            device={connectedDevice}
+            diagnostics={diagnostics}
+            now={diagnosticClock}
+            serviceUuid={bleServiceUuid}
+            theme={theme}
+          />
+        )}
       </ScrollView>
 
       {isMenuOpen && (
@@ -446,6 +500,221 @@ export default function HomeScreen() {
       <Pressable style={styles.floatingMenuButton} onPress={() => setIsMenuOpen(!isMenuOpen)}>
         <Text style={styles.floatingMenuIcon}>{isMenuOpen ? '×' : '☰'}</Text>
       </Pressable>
+    </View>
+  );
+}
+
+function BluetoothDiagnosticsPanel({
+  adapterState,
+  characteristicUuid,
+  clearLogs,
+  device,
+  diagnostics,
+  now,
+  serviceUuid,
+  theme,
+}: {
+  adapterState: string;
+  characteristicUuid: string;
+  clearLogs: () => void;
+  device: { id: string; name: string; rssi: number | null };
+  diagnostics: BleDiagnostics;
+  now: number;
+  serviceUuid: string;
+  theme: typeof darkTheme;
+}) {
+  const signal = getSignalQuality(diagnostics.rssi);
+  const uptime = diagnostics.connectedAt ? formatElapsed(now - diagnostics.connectedAt) : 'Starting…';
+  const lastPacketAge = diagnostics.lastPacketAt
+    ? `${formatElapsed(now - diagnostics.lastPacketAt)} ago`
+    : 'Waiting for data';
+  const validPacketRate = diagnostics.notificationsReceived
+    ? `${(((diagnostics.notificationsReceived - diagnostics.malformedPackets) / diagnostics.notificationsReceived) * 100).toFixed(1)}%`
+    : '100%';
+
+  return (
+    <View style={[styles.bluetoothDiagnostics, { backgroundColor: theme.card, borderColor: theme.border }]}>
+      <View style={styles.diagnosticsHeader}>
+        <View style={styles.diagnosticsHeading}>
+          <View style={[styles.liveDot, { backgroundColor: signal.color }]} />
+          <View>
+            <Text style={[styles.cardTitle, { color: theme.text }]}>Bluetooth Diagnostics</Text>
+            <Text style={[styles.diagnosticsSubtitle, { color: theme.muted }]}>Live session · {uptime}</Text>
+          </View>
+        </View>
+        <View style={[styles.signalPill, { borderColor: signal.color }]}>
+          <Text style={[styles.signalPillText, { color: signal.color }]}>{signal.label}</Text>
+        </View>
+      </View>
+
+      <View style={styles.diagnosticsMetricGrid}>
+        <DiagnosticMetric
+          label="Signal"
+          value={diagnostics.rssi === null ? '— dBm' : `${diagnostics.rssi} dBm`}
+          detail="Updated every 5 sec"
+          theme={theme}
+        />
+        <DiagnosticMetric
+          label="Notifications"
+          value={String(diagnostics.notificationsReceived)}
+          detail={`${diagnostics.packetsLastMinute} in last minute`}
+          theme={theme}
+        />
+        <DiagnosticMetric
+          label="Data Received"
+          value={formatBytes(diagnostics.bytesReceived)}
+          detail={lastPacketAge}
+          theme={theme}
+        />
+        <DiagnosticMetric
+          label="Packet Health"
+          value={validPacketRate}
+          detail={`${diagnostics.malformedPackets} unrecognized`}
+          theme={theme}
+        />
+        <DiagnosticMetric
+          label="Shot Packets"
+          value={String(diagnostics.shotPackets)}
+          detail={`${diagnostics.diagnosticMessages} device messages`}
+          theme={theme}
+        />
+        <DiagnosticMetric
+          label="BLE Link"
+          value={`MTU ${diagnostics.mtu ?? '—'}`}
+          detail={`${diagnostics.servicesDiscovered} services discovered`}
+          theme={theme}
+        />
+      </View>
+
+      <View style={[styles.connectionDetails, { backgroundColor: theme.debugBackground, borderColor: theme.border }]}>
+        <Text style={[styles.diagnosticsSectionTitle, { color: accent }]}>Connection</Text>
+        <DiagnosticLine label="Device" value={device.name} theme={theme} />
+        <DiagnosticLine label="Device ID" value={device.id} theme={theme} monospace />
+        <DiagnosticLine label="Adapter" value={adapterState} theme={theme} />
+        <DiagnosticLine label="Service" value={serviceUuid} theme={theme} monospace />
+        <DiagnosticLine label="Notify characteristic" value={characteristicUuid} theme={theme} monospace />
+        <DiagnosticLine
+          label="Discovery"
+          value={`${diagnostics.servicesDiscovered} services / ${diagnostics.characteristicCount} service characteristics`}
+          theme={theme}
+        />
+      </View>
+
+      <View style={[styles.rawPacketPanel, { backgroundColor: theme.debugBackground, borderColor: theme.border }]}>
+        <View style={styles.diagnosticsSectionHeader}>
+          <Text style={[styles.diagnosticsSectionTitle, { color: accent }]}>Latest Incoming Data</Text>
+          <Text style={[styles.packetAge, { color: theme.muted }]}>{lastPacketAge}</Text>
+        </View>
+        <Text style={[styles.rawDataLabel, { color: theme.muted }]}>Decoded payload</Text>
+        <Text selectable style={[styles.rawDataValue, { color: theme.text }]}>
+          {diagnostics.lastRawValue ?? 'Waiting for the first Bluetooth notification…'}
+        </Text>
+        <Text style={[styles.rawDataLabel, { color: theme.muted }]}>Base64 from BLE</Text>
+        <Text selectable style={[styles.base64Value, { color: theme.muted }]}>
+          {diagnostics.lastBase64Value ?? '—'}
+        </Text>
+      </View>
+
+      <View style={styles.diagnosticsLogSection}>
+        <View style={styles.diagnosticsSectionHeader}>
+          <Text style={[styles.diagnosticsSectionTitle, { color: accent }]}>Event Log</Text>
+          <Pressable
+            accessibilityRole="button"
+            disabled={diagnostics.logs.length === 0}
+            onPress={clearLogs}
+            style={[styles.clearLogButton, { borderColor: theme.border }, diagnostics.logs.length === 0 && styles.disabledButton]}
+          >
+            <Text style={[styles.clearLogButtonText, { color: theme.text }]}>Clear</Text>
+          </Pressable>
+        </View>
+
+        {diagnostics.logs.length === 0 ? (
+          <Text style={[styles.emptyText, { color: theme.muted }]}>No Bluetooth events logged yet.</Text>
+        ) : (
+          diagnostics.logs.slice(0, 20).map((entry) => {
+            const logColor =
+              entry.level === 'error'
+                ? '#ef4444'
+                : entry.level === 'warning'
+                  ? '#f59e0b'
+                  : entry.level === 'data'
+                    ? '#22c55e'
+                    : '#38bdf8';
+
+            return (
+              <View key={entry.id} style={[styles.logRow, { borderColor: theme.border }]}>
+                <View style={[styles.logLevelDot, { backgroundColor: logColor }]} />
+                <View style={styles.logContent}>
+                  <View style={styles.logTitleRow}>
+                    <Text style={[styles.logMessage, { color: theme.text }]}>{entry.message}</Text>
+                    <Text style={[styles.logTime, { color: theme.muted }]}>
+                      {new Date(entry.timestamp).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                      })}
+                    </Text>
+                  </View>
+                  {entry.detail && (
+                    <Text selectable style={[styles.logDetail, { color: theme.muted }]}>
+                      {entry.detail}
+                    </Text>
+                  )}
+                </View>
+              </View>
+            );
+          })
+        )}
+        {diagnostics.logs.length > 20 && (
+          <Text style={[styles.moreLogsText, { color: theme.muted }]}>
+            Showing newest 20 of {diagnostics.logs.length} retained events
+          </Text>
+        )}
+      </View>
+    </View>
+  );
+}
+
+function DiagnosticMetric({
+  detail,
+  label,
+  theme,
+  value,
+}: {
+  detail: string;
+  label: string;
+  theme: typeof darkTheme;
+  value: string;
+}) {
+  return (
+    <View style={[styles.diagnosticMetric, { backgroundColor: theme.debugBackground, borderColor: theme.border }]}>
+      <Text style={[styles.metricLabel, { color: theme.muted }]}>{label}</Text>
+      <Text style={[styles.metricValue, { color: theme.text }]}>{value}</Text>
+      <Text style={[styles.metricDetail, { color: theme.muted }]}>{detail}</Text>
+    </View>
+  );
+}
+
+function DiagnosticLine({
+  label,
+  monospace = false,
+  theme,
+  value,
+}: {
+  label: string;
+  monospace?: boolean;
+  theme: typeof darkTheme;
+  value: string;
+}) {
+  return (
+    <View style={styles.diagnosticLine}>
+      <Text style={[styles.diagnosticLineLabel, { color: theme.muted }]}>{label}</Text>
+      <Text
+        selectable
+        style={[styles.diagnosticLineValue, { color: theme.text }, monospace && styles.monospaceText]}
+      >
+        {value}
+      </Text>
     </View>
   );
 }
@@ -915,5 +1184,189 @@ const styles = StyleSheet.create({
   deviceSignal: {
     fontSize: 11,
     fontWeight: '900',
+  },
+  bluetoothDiagnostics: {
+    borderWidth: 1,
+    borderRadius: 24,
+    padding: 18,
+    gap: 16,
+  },
+  diagnosticsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  diagnosticsHeading: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  liveDot: {
+    width: 11,
+    height: 11,
+    borderRadius: 6,
+  },
+  diagnosticsSubtitle: {
+    marginTop: 3,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  signalPill: {
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  signalPillText: {
+    fontSize: 11,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  diagnosticsMetricGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  diagnosticMetric: {
+    width: '48.2%',
+    minHeight: 104,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 12,
+  },
+  metricLabel: {
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
+  metricValue: {
+    marginTop: 8,
+    fontSize: 21,
+    fontWeight: '900',
+  },
+  metricDetail: {
+    marginTop: 5,
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '700',
+  },
+  connectionDetails: {
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 14,
+    gap: 10,
+  },
+  diagnosticsSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  diagnosticsSectionTitle: {
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.7,
+    textTransform: 'uppercase',
+  },
+  diagnosticLine: {
+    gap: 3,
+  },
+  diagnosticLineLabel: {
+    fontSize: 10,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  diagnosticLineValue: {
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '700',
+  },
+  monospaceText: {
+    fontFamily: 'monospace',
+  },
+  rawPacketPanel: {
+    borderWidth: 1,
+    borderRadius: 18,
+    padding: 14,
+    gap: 8,
+  },
+  packetAge: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  rawDataLabel: {
+    marginTop: 3,
+    fontSize: 10,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  rawDataValue: {
+    fontFamily: 'monospace',
+    fontSize: 12,
+    lineHeight: 18,
+  },
+  base64Value: {
+    fontFamily: 'monospace',
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  diagnosticsLogSection: {
+    gap: 8,
+  },
+  clearLogButton: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  clearLogButtonText: {
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  logRow: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    paddingTop: 10,
+    gap: 9,
+  },
+  logLevelDot: {
+    width: 8,
+    height: 8,
+    marginTop: 5,
+    borderRadius: 4,
+  },
+  logContent: {
+    flex: 1,
+  },
+  logTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  logMessage: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '800',
+  },
+  logTime: {
+    fontSize: 9,
+    lineHeight: 16,
+    fontWeight: '700',
+  },
+  logDetail: {
+    marginTop: 3,
+    fontFamily: 'monospace',
+    fontSize: 10,
+    lineHeight: 15,
+  },
+  moreLogsText: {
+    textAlign: 'center',
+    fontSize: 10,
+    fontWeight: '700',
   },
 });
