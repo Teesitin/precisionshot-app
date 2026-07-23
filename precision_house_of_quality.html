@@ -307,6 +307,133 @@
 		}
 	</style>
 </head>
+
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+
+<script>
+	document.addEventListener('DOMContentLoaded', () => {
+		const shell = document.querySelector('.hoq-shell');
+		const house = document.querySelector('.hoq-stage');
+		const scrollContainer = document.querySelector('.hoq-scroll');
+
+		if (!shell || !house || !scrollContainer) {
+			console.error('House of Quality elements could not be found.');
+			return;
+		}
+
+		/*
+			Create the download button with JavaScript so the existing
+			HTML structure does not need to be changed.
+		*/
+		const downloadButton = document.createElement('button');
+
+		downloadButton.type = 'button';
+		downloadButton.textContent = 'Download House of Quality';
+		downloadButton.setAttribute(
+			'aria-label',
+			'Download the House of Quality as a PNG image'
+		);
+
+		Object.assign(downloadButton.style, {
+			display: 'block',
+			margin: '0 auto 22px',
+			padding: '12px 22px',
+			border: '2px solid #111827',
+			borderRadius: '8px',
+			background: '#8e8cf6',
+			color: '#101827',
+			fontFamily: "'Times New Roman', Times, serif",
+			fontSize: '17px',
+			fontWeight: '700',
+			cursor: 'pointer'
+		});
+
+		/*
+			Place the button above .hoq-scroll.
+
+			The downloaded image captures only .hoq-stage, so this
+			button will not appear in the exported image.
+		*/
+		shell.insertBefore(downloadButton, scrollContainer);
+
+		downloadButton.addEventListener('mouseenter', () => {
+			if (!downloadButton.disabled) {
+				downloadButton.style.background = '#a7a5ff';
+			}
+		});
+
+		downloadButton.addEventListener('mouseleave', () => {
+			if (!downloadButton.disabled) {
+				downloadButton.style.background = '#8e8cf6';
+			}
+		});
+
+		downloadButton.addEventListener('click', async () => {
+			const originalText = downloadButton.textContent;
+
+			downloadButton.disabled = true;
+			downloadButton.textContent = 'Preparing image...';
+			downloadButton.style.cursor = 'wait';
+			downloadButton.style.opacity = '0.7';
+
+			try {
+				/*
+					Wait for the Times New Roman font and all other
+					document fonts to finish rendering.
+				*/
+				if (document.fonts && document.fonts.ready) {
+					await document.fonts.ready;
+				}
+
+				const canvas = await html2canvas(house, {
+					backgroundColor: '#ffffff',
+					scale: 2,
+					useCORS: true,
+					logging: false
+				});
+
+				const imageBlob = await new Promise((resolve) => {
+					canvas.toBlob(resolve, 'image/png');
+				});
+
+				if (!imageBlob) {
+					throw new Error('The PNG image could not be created.');
+				}
+
+				const imageUrl = URL.createObjectURL(imageBlob);
+				const downloadLink = document.createElement('a');
+
+				downloadLink.href = imageUrl;
+				downloadLink.download =
+					'PrecisionShot-House-of-Quality.png';
+
+				document.body.appendChild(downloadLink);
+				downloadLink.click();
+				downloadLink.remove();
+
+				setTimeout(() => {
+					URL.revokeObjectURL(imageUrl);
+				}, 1000);
+			} catch (error) {
+				console.error(
+					'House of Quality download failed:',
+					error
+				);
+
+				alert(
+					'The House of Quality image could not be downloaded.'
+				);
+			} finally {
+				downloadButton.disabled = false;
+				downloadButton.textContent = originalText;
+				downloadButton.style.cursor = 'pointer';
+				downloadButton.style.opacity = '1';
+				downloadButton.style.background = '#8e8cf6';
+			}
+		});
+	});
+</script>
+
 <body>
 	<section class="hoq-section">
 		<div class="hoq-shell">
@@ -382,31 +509,31 @@
 								<th class="side-header" rowspan="2">Customer<br />importance rating<br /><small>(1 = low, 5 = high)</small></th>
 								<th class="side-header" rowspan="2">Percent of customer<br />importance rating</th>
 								<th class="eng-head"><span class="vertical-text">Sensor spacing / array density</span></th>
-								<th class="eng-head"><span class="vertical-text">Shot detection response time</span></th>
-								<th class="eng-head"><span class="vertical-text">Battery life / power efficiency</span></th>
-								<th class="eng-head"><span class="vertical-text">Ambient light filtering / calibration</span></th>
-								<th class="eng-head"><span class="vertical-text">Wireless / app update delay</span></th>
-								<th class="eng-head"><span class="vertical-text">User interface / training mode control</span></th>
+								<th class="eng-head"><span class="vertical-text">Local shot-detection response time</span></th>
+								<th class="eng-head"><span class="vertical-text">Battery runtime / power efficiency</span></th>
+								<th class="eng-head"><span class="vertical-text">Ambient-light false-trigger control</span></th>
+								<th class="eng-head"><span class="vertical-text">BLE app update delay</span></th>
+								<th class="eng-head"><span class="vertical-text">Standalone interface / training-mode control</span></th>
 								<th class="competitor-title" colspan="3">Competitor research <small>1 = poor, 5 = excellent</small></th>
 							</tr>
 
 							<tr>
 								<th class="target-title">Design direction &amp; target</th>
-								<th class="target-cell"><span class="direction">▼</span>Smaller sensor spacing is better; dense center zone preferred</th>
-								<th class="target-cell"><span class="direction">▼</span>Less than 10 ms</th>
-								<th class="target-cell"><span class="direction">▲</span>At least 10 hours</th>
-								<th class="target-cell"><span class="direction">▲</span>Detect laser shots while rejecting ambient light</th>
-								<th class="target-cell"><span class="direction">▼</span>App updates in less than 1 second; wireless range up to 30 m</th>
-								<th class="target-cell"><span class="direction">▲</span>Display, buttons, calibration, reset, and multiple training modes</th>
-								<th class="target-cell">LaserLyte-style<br />basic laser target</th>
-								<th class="target-cell">Mantis BlackbeardX-style<br />app system</th>
-								<th class="target-cell">PrecisionShot<br />target goal</th>
+								<th class="target-cell"><span class="direction">▼</span>Center-zone sensor spacing no greater than 5 mm; outer-zone spacing no greater than 20 mm</th>
+								<th class="target-cell"><span class="direction">▼</span>Laser detection and local LED feedback in less than 10 ms</th>
+								<th class="target-cell"><span class="direction">▲</span>At least 10 hours of normal operation per charge</th>
+								<th class="target-cell"><span class="direction">▼</span>Less than 1% false triggers during defined indoor and outdoor lighting tests</th>
+								<th class="target-cell"><span class="direction">▼</span>New shot data displayed in the mobile app in less than 1 second</th>
+								<th class="target-cell"><span class="direction">▲</span>At least three core training modes available through the onboard display and controls</th>
+								<th class="target-cell">LaserLyte<br />Steel Tyme</th>
+								<th class="target-cell">Mantis<br />BlackbeardX</th>
+								<th class="target-cell">PrecisionShot<br />planned design</th>
 							</tr>
 						</thead>
 
 						<tbody>
 							<tr class="customer-row">
-								<th>1. Accurate shot detection</th>
+								<th>1. Accurate shot-location detection</th>
 								<td>5</td>
 								<td>20%</td>
 								<td class="matrix-symbol">●</td>
@@ -436,7 +563,7 @@
 							</tr>
 
 							<tr class="customer-row">
-								<th>3. Easy to use</th>
+								<th>3. Easy standalone setup and operation</th>
 								<td>4</td>
 								<td>16%</td>
 								<td class="matrix-symbol">△</td>
@@ -466,7 +593,7 @@
 							</tr>
 
 							<tr class="customer-row">
-								<th>5. Reliable in different lighting conditions</th>
+								<th>5. Reliable across different lighting conditions</th>
 								<td>5</td>
 								<td>20%</td>
 								<td class="matrix-symbol">○</td>
@@ -481,7 +608,7 @@
 							</tr>
 
 							<tr class="customer-row">
-								<th>6. Good wireless/app integration</th>
+								<th>6. Reliable BLE/mobile-app integration</th>
 								<td>4</td>
 								<td>16%</td>
 								<td class="matrix-symbol">—</td>
@@ -520,7 +647,7 @@
 						</tfoot>
 					</table>
 
-					<p class="hoq-note">Note: Design direction uses ▲ for “higher is better” and ▼ for “lower is better.” Correlations in the roof use + for positive, - for negative, and 0 for no correlation.</p>
+					<p class="hoq-note">Note: Design direction uses ▲ for “higher is better” and ▼ for “lower is better.” Correlations in the roof use + for positive, - for negative, and 0 for no correlation. Customer importance ratings reflect the team’s current assessment of user and reviewer priorities. Competitor scores are planning-level comparisons, and the PrecisionShot scores represent unverified design targets.</p>
 				</div>
 			</div>
 		</div>
