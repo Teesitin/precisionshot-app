@@ -42,7 +42,11 @@
           "neverForLocation": true,
           "bluetoothAlwaysPermission": "Allow PrecisionShot to find and connect to your training target."
         }
-      ]
+      ],
+      "expo-font",
+      "expo-image",
+      "expo-status-bar",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,
