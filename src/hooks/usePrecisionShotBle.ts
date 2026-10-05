@@ -1,517 +1,392 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { PermissionsAndroid, Platform } from 'react-native';
-import { BleManager, Device, State, type Subscription } from 'react-native-ble-plx';
+import { AppState, PermissionsAndroid, Platform } from 'react-native';
+import { BleManager, State, type Device, type Subscription } from 'react-native-ble-plx';
+import {
+    SERVICE_UUID,
+    TX_UUID,
+    RX_UUID,
+    SnapshotReader,
+    decodeAscii,
+    encodeAscii,
+    parseShot,
+    type BoardState,
+    type ShotPacket,
+} from '@/lib/protocol';
 
-const SERVICE_UUID = '8c7a0001-6c3b-4f3d-a8d9-2adbc9f10211';
-const TX_UUID = '8c7a0002-6c3b-4f3d-a8d9-2adbc9f10211';
-const SCAN_DURATION_MS = 10_000;
-const RSSI_POLL_INTERVAL_MS = 5_000;
-const MAX_DIAGNOSTIC_LOGS = 60;
-
-export type PrecisionShotPacket = {
-  hit: number;
-  score: number;
-  x?: number;
-  y?: number;
+export type BleDeviceOption = { id: string; name: string; rssi: number | null };
+export type DiagnosticLog = { id: number; time: number; text: string };
+type Pending = {
+    id: number;
+    timer: ReturnType<typeof setTimeout>;
+    resolve: () => void;
+    reject: (error: Error) => void;
+    receivedState: boolean;
 };
 
-export type BleDeviceOption = {
-  id: string;
-  name: string;
-  rssi: number | null;
-};
-
-export type BleDiagnosticLog = {
-  id: number;
-  timestamp: number;
-  level: 'info' | 'data' | 'warning' | 'error';
-  message: string;
-  detail?: string;
-};
-
-export type BleDiagnostics = {
-  bytesReceived: number;
-  characteristicCount: number;
-  connectedAt: number | null;
-  diagnosticMessages: number;
-  lastBase64Value: string | null;
-  lastPacketAt: number | null;
-  lastRawValue: string | null;
-  logs: BleDiagnosticLog[];
-  malformedPackets: number;
-  mtu: number | null;
-  notificationsReceived: number;
-  packetsLastMinute: number;
-  rssi: number | null;
-  servicesDiscovered: number;
-  shotPackets: number;
-};
-
-type ConnectionState = 'idle' | 'connecting' | 'connected';
-
-function getErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'An unexpected Bluetooth error occurred.';
+function message(error: unknown) {
+    return error instanceof Error ? error.message : 'Bluetooth could not complete the request.';
 }
 
-function decodeBase64Ascii(value: string) {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  let result = '';
-  let buffer = 0;
-  let bitsInBuffer = 0;
-
-  for (const character of value) {
-    if (character === '=') break;
-
-    const sixBits = alphabet.indexOf(character);
-    if (sixBits < 0) continue;
-
-    buffer = (buffer << 6) | sixBits;
-    bitsInBuffer += 6;
-
-    if (bitsInBuffer >= 8) {
-      bitsInBuffer -= 8;
-      result += String.fromCharCode((buffer >> bitsInBuffer) & 0xff);
+async function requestPermission() {
+    if (Platform.OS !== 'android') return Platform.OS === 'ios';
+    if (Number(Platform.Version) < 31) {
+        return (
+            (await PermissionsAndroid.request(
+                PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+            )) === 'granted'
+        );
     }
-  }
-
-  return result;
+    const permissions = [
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+        PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
+    ];
+    const result = await PermissionsAndroid.requestMultiple(permissions);
+    return permissions.every((permission) => result[permission] === 'granted');
 }
 
-function createEmptyDiagnostics(): BleDiagnostics {
-  return {
-    bytesReceived: 0,
-    characteristicCount: 0,
-    connectedAt: null,
-    diagnosticMessages: 0,
-    lastBase64Value: null,
-    lastPacketAt: null,
-    lastRawValue: null,
-    logs: [],
-    malformedPackets: 0,
-    mtu: null,
-    notificationsReceived: 0,
-    packetsLastMinute: 0,
-    rssi: null,
-    servicesDiscovered: 0,
-    shotPackets: 0,
-  };
-}
+// The board owns the scores. This hook sends commands and listens for replies.
+export function usePrecisionShotBle(debugZoneVisible = false) {
+    const [appActive, setAppActive] = useState(AppState.currentState === 'active');
+    const [devices, setDevices] = useState<BleDeviceOption[]>([]);
+    const [connectedDevice, setConnectedDevice] = useState<BleDeviceOption | null>(null);
+    const [connectionState, setConnectionState] = useState<'idle' | 'connecting' | 'connected'>(
+        'idle',
+    );
+    const [adapterState, setAdapterState] = useState<State>(State.Unknown);
+    const [isScanning, setIsScanning] = useState(false);
+    const [isSynced, setIsSynced] = useState(false);
+    const [pendingCommands, setPendingCommands] = useState(0);
+    const [board, setBoard] = useState<BoardState | null>(null);
+    const [lastShot, setLastShot] = useState<{ packet: ShotPacket; time: number } | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [logs, setLogs] = useState<DiagnosticLog[]>([]);
+    const [notifications, setNotifications] = useState(0);
+    const managerRef = useRef<BleManager | null>(null);
+    const deviceRef = useRef<Device | null>(null);
+    const deviceMap = useRef(new Map<string, Device>());
+    const monitorRef = useRef<Subscription | null>(null);
+    const disconnectRef = useRef<Subscription | null>(null);
+    const scanTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const reader = useRef(new SnapshotReader());
+    const pending = useRef<Pending | null>(null);
+    const queue = useRef<Promise<void>>(Promise.resolve());
+    const generation = useRef(0);
+    const requestId = useRef(0);
+    const logId = useRef(0);
+    const mounted = useRef(true);
 
-function formatLogDetail(value: string) {
-  const printable = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, (character) => {
-    const code = character.charCodeAt(0).toString(16).toUpperCase().padStart(2, '0');
-    return `\\x${code}`;
-  });
+    const log = useCallback((text: string) => {
+        if (!mounted.current) return;
+        const entry = { id: ++logId.current, time: Date.now(), text };
+        setLogs((current) => [entry, ...current].slice(0, 60));
+    }, []);
 
-  return printable || '(empty payload)';
-}
+    const failPending = useCallback((reason: string) => {
+        const active = pending.current;
+        pending.current = null;
+        if (active) {
+            clearTimeout(active.timer);
+            active.reject(new Error(reason));
+        }
+    }, []);
 
-function parsePrecisionShotPacket(value: string | null): PrecisionShotPacket | null {
-  if (!value) return null;
+    const clearConnection = useCallback(() => {
+        ++generation.current;
+        monitorRef.current?.remove();
+        disconnectRef.current?.remove();
+        monitorRef.current = null;
+        disconnectRef.current = null;
+        deviceRef.current = null;
+        reader.current.reset();
+        failPending('The board disconnected.');
+        if (mounted.current) {
+            setConnectedDevice(null);
+            setConnectionState('idle');
+            setIsSynced(false);
+            setBoard(null);
+            setLastShot(null);
+        }
+    }, [failPending]);
 
-  try {
-    const packet = JSON.parse(decodeBase64Ascii(value)) as Partial<PrecisionShotPacket>;
+    useEffect(() => {
+        mounted.current = true;
+        if (Platform.OS === 'web') return;
+        let manager: BleManager;
+        try {
+            manager = new BleManager();
+            managerRef.current = manager;
+        } catch {
+            setError('Install the Android app to use Bluetooth.');
+            return;
+        }
+        const subscription = manager.onStateChange(setAdapterState, true);
+        return () => {
+            mounted.current = false;
+            if (scanTimer.current) clearTimeout(scanTimer.current);
+            clearConnection();
+            subscription.remove();
+            void manager.stopDeviceScan().catch(() => undefined);
+            void manager.destroy().catch(() => undefined);
+            managerRef.current = null;
+        };
+    }, [clearConnection]);
 
-    if (typeof packet.hit !== 'number' || typeof packet.score !== 'number') {
-      return null;
-    }
+    const stopScan = useCallback(async () => {
+        if (scanTimer.current) clearTimeout(scanTimer.current);
+        scanTimer.current = null;
+        setIsScanning(false);
+        await managerRef.current?.stopDeviceScan().catch(() => undefined);
+    }, []);
+
+    const scan = useCallback(async () => {
+        setError(null);
+        try {
+            if (Platform.OS === 'web')
+                throw new Error('Use the installed phone app to connect over Bluetooth.');
+            if (!(await requestPermission()))
+                throw new Error('Allow Bluetooth permission to find your board.');
+            const manager = managerRef.current;
+            if (!manager || (await manager.state()) !== State.PoweredOn)
+                throw new Error('Turn on Bluetooth and scan again.');
+            await stopScan();
+            deviceMap.current.clear();
+            setDevices([]);
+            setIsScanning(true);
+            log('Scanning for PrecisionShot');
+            await manager.startDeviceScan(
+                [SERVICE_UUID],
+                { allowDuplicates: false },
+                (scanError, device) => {
+                    if (scanError) {
+                        setError(scanError.message);
+                        void stopScan();
+                        return;
+                    }
+                    if (!device || !mounted.current) return;
+                    deviceMap.current.set(device.id, device);
+                    const option = {
+                        id: device.id,
+                        name: device.name ?? device.localName ?? 'PrecisionShot',
+                        rssi: device.rssi,
+                    };
+                    setDevices((current) => [
+                        ...current.filter((item) => item.id !== device.id),
+                        option,
+                    ]);
+                },
+            );
+            scanTimer.current = setTimeout(() => void stopScan(), 10000);
+        } catch (scanError) {
+            setError(message(scanError));
+            await stopScan();
+        }
+    }, [log, stopScan]);
+
+    // Send one request at a time and wait for the board's matching ACK.
+    const sendCommand = useCallback(
+        (command: string) => {
+            const epoch = generation.current;
+            setPendingCommands((count) => count + 1);
+            const task = queue.current
+                .catch(() => undefined)
+                .then(async () => {
+                    const device = deviceRef.current;
+                    if (!device || epoch !== generation.current)
+                        throw new Error('Connect to PrecisionShot first.');
+                    const id = (requestId.current = (requestId.current % 999) + 1);
+                    const text = `@${id}:${command}`;
+                    if (text.length > 20 || !/^[\x20-\x7e]+$/.test(text))
+                        throw new Error('Invalid board command.');
+                    log(`TX ${text}`);
+                    await new Promise<void>((resolve, reject) => {
+                        const timer = setTimeout(() => {
+                            if (pending.current?.id === id) {
+                                pending.current = null;
+                                reject(
+                                    new Error(
+                                        'The board did not confirm the action. Use Sync board in Settings.',
+                                    ),
+                                );
+                            }
+                        }, 5000);
+                        pending.current = { id, timer, resolve, reject, receivedState: false };
+                        void device
+                            .writeCharacteristicWithResponseForService(
+                                SERVICE_UUID,
+                                RX_UUID,
+                                encodeAscii(text),
+                            )
+                            .catch((writeError) => {
+                                if (epoch === generation.current && pending.current?.id === id)
+                                    failPending(message(writeError));
+                            });
+                    });
+                });
+            queue.current = task;
+            return task
+                .catch((commandError) => {
+                    if (mounted.current && epoch === generation.current) {
+                        setError(message(commandError));
+                        setIsSynced(false);
+                        log(message(commandError));
+                    }
+                    throw commandError;
+                })
+                .finally(() => {
+                    if (mounted.current) setPendingCommands((count) => Math.max(0, count - 1));
+                });
+        },
+        [failPending, log],
+    );
+
+    const disconnect = useCallback(async () => {
+        const device = deviceRef.current;
+        clearConnection();
+        await device?.cancelConnection().catch(() => undefined);
+        log('Disconnected');
+    }, [clearConnection, log]);
+
+    const connect = useCallback(
+        async (id: string) => {
+            if (connectionState === 'connecting') return;
+            setError(null);
+            await stopScan();
+            await disconnect();
+            const epoch = generation.current;
+            let connected: Device | null = null;
+            try {
+                const device = deviceMap.current.get(id);
+                if (!device) throw new Error('Scan again to find the board.');
+                setConnectionState('connecting');
+                connected = await device.connect({ timeout: 10000 });
+                const ready = await connected.discoverAllServicesAndCharacteristics();
+                if (epoch !== generation.current) throw new Error('Connection cancelled.');
+                const characteristics = await ready.characteristicsForService(SERVICE_UUID);
+                if (
+                    !characteristics.some(
+                        (item) => item.uuid.toLowerCase() === TX_UUID && item.isNotifiable,
+                    ) ||
+                    !characteristics.some(
+                        (item) =>
+                            item.uuid.toLowerCase() === RX_UUID && item.isWritableWithResponse,
+                    )
+                ) {
+                    throw new Error('This board does not provide the required Bluetooth controls.');
+                }
+                deviceRef.current = ready;
+                reader.current.reset();
+                setLogs([]);
+                setNotifications(0);
+                monitorRef.current = ready.monitorCharacteristicForService(
+                    SERVICE_UUID,
+                    TX_UUID,
+                    (monitorError, characteristic) => {
+                        if (epoch !== generation.current || !mounted.current) return;
+                        if (monitorError) {
+                            setError(monitorError.message);
+                            setIsSynced(false);
+                            failPending(monitorError.message);
+                            return;
+                        }
+                        if (!characteristic?.value) return;
+                        try {
+                            const text = decodeAscii(characteristic.value);
+                            log(`RX ${text}`);
+                            setNotifications((count) => count + 1);
+                            const state = reader.current.push(text);
+                            if (state) {
+                                setBoard(state);
+                                setIsSynced(true);
+                                if (state.lastScore === null) setLastShot(null);
+                                if (pending.current) pending.current.receivedState = true;
+                            }
+                            const shot = parseShot(text);
+                            if (shot) setLastShot({ packet: shot, time: Date.now() });
+                            const ack = /^ACK:(\d+)$/.exec(text);
+                            const rejection = /^ERR:(\d+):(.+)$/.exec(text);
+                            const active = pending.current;
+                            if (
+                                active &&
+                                ack &&
+                                Number(ack[1]) === active.id &&
+                                active.receivedState
+                            ) {
+                                clearTimeout(active.timer);
+                                pending.current = null;
+                                active.resolve();
+                            } else if (active && rejection && Number(rejection[1]) === active.id) {
+                                failPending(`Board rejected the action: ${rejection[2]}`);
+                            }
+                        } catch (parseError) {
+                            log(message(parseError));
+                        }
+                    },
+                );
+                disconnectRef.current = managerRef.current!.onDeviceDisconnected(ready.id, () => {
+                    if (epoch !== generation.current) return;
+                    clearConnection();
+                    log('Board disconnected');
+                });
+                setConnectedDevice({
+                    id: ready.id,
+                    name: ready.name ?? 'PrecisionShot',
+                    rssi: ready.rssi,
+                });
+                setConnectionState('connected');
+                // Give the notification subscription time to reach the board.
+                await new Promise((resolve) => setTimeout(resolve, 200));
+                await sendCommand('STATE');
+                log('Board state synchronized');
+            } catch (connectError) {
+                if (epoch === generation.current) {
+                    clearConnection();
+                    setError(message(connectError));
+                }
+                await connected?.cancelConnection().catch(() => undefined);
+            }
+        },
+        [clearConnection, connectionState, disconnect, failPending, log, sendCommand, stopScan],
+    );
+
+    useEffect(() => {
+        const subscription = AppState.addEventListener('change', (state) => {
+            setAppActive(state === 'active');
+        });
+        return () => subscription.remove();
+    }, []);
+
+    useEffect(() => {
+        if (connectionState !== 'connected' || !isSynced) return;
+        const watching = debugZoneVisible && appActive;
+        // Opening, closing, or backgrounding the panel changes the board subscription.
+        const update = () =>
+            void sendCommand(watching ? 'WATCH:1' : 'WATCH:0').catch(() => undefined);
+        update();
+        const timer = watching ? setInterval(update, 5000) : null;
+        return () => {
+            if (timer) clearInterval(timer);
+        };
+    }, [appActive, connectionState, debugZoneVisible, isSynced, sendCommand]);
 
     return {
-      hit: packet.hit,
-      score: packet.score,
-      x: typeof packet.x === 'number' ? packet.x : undefined,
-      y: typeof packet.y === 'number' ? packet.y : undefined,
+        devices,
+        connectedDevice,
+        connectionState,
+        adapterState,
+        isScanning,
+        isSynced,
+        busy: pendingCommands > 0,
+        board,
+        lastShot,
+        error,
+        logs,
+        notifications,
+        scan,
+        stopScan,
+        connect,
+        disconnect,
+        sendCommand,
+        clearError: () => setError(null),
+        clearLogs: () => setLogs([]),
     };
-  } catch {
-    // Messages such as READY and PONG are valid diagnostics, but not shot data.
-    return null;
-  }
-}
-
-async function requestBluetoothPermission() {
-  if (Platform.OS !== 'android') return Platform.OS === 'ios';
-
-  const apiLevel = Number(Platform.Version);
-
-  if (apiLevel >= 31) {
-    const result = await PermissionsAndroid.requestMultiple([
-      PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
-      PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,
-    ]);
-
-    return (
-      result[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN] === PermissionsAndroid.RESULTS.GRANTED &&
-      result[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT] === PermissionsAndroid.RESULTS.GRANTED
-    );
-  }
-
-  const result = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
-  return result === PermissionsAndroid.RESULTS.GRANTED;
-}
-
-export function usePrecisionShotBle(onShot: (packet: PrecisionShotPacket) => void) {
-  const [devices, setDevices] = useState<BleDeviceOption[]>([]);
-  const [connectedDevice, setConnectedDevice] = useState<BleDeviceOption | null>(null);
-  const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
-  const [adapterState, setAdapterState] = useState<State>(State.Unknown);
-  const [isScanning, setIsScanning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [diagnostics, setDiagnostics] = useState<BleDiagnostics>(createEmptyDiagnostics);
-
-  const managerRef = useRef<BleManager | null>(null);
-  const deviceMapRef = useRef(new Map<string, Device>());
-  const scanTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const monitorSubscriptionRef = useRef<Subscription | null>(null);
-  const disconnectSubscriptionRef = useRef<Subscription | null>(null);
-  const rssiTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const packetTimesRef = useRef<number[]>([]);
-  const diagnosticLogIdRef = useRef(0);
-  const onShotRef = useRef(onShot);
-
-  const addDiagnosticLog = useCallback(
-    (level: BleDiagnosticLog['level'], message: string, detail?: string) => {
-      const entry: BleDiagnosticLog = {
-        id: ++diagnosticLogIdRef.current,
-        timestamp: Date.now(),
-        level,
-        message,
-        detail,
-      };
-
-      setDiagnostics((current) => ({
-        ...current,
-        logs: [entry, ...current.logs].slice(0, MAX_DIAGNOSTIC_LOGS),
-      }));
-    },
-    [],
-  );
-
-  useEffect(() => {
-    onShotRef.current = onShot;
-  }, [onShot]);
-
-  useEffect(() => {
-    if (Platform.OS === 'web') {
-      setError('Bluetooth scanning is available in an installed Android or iOS build.');
-      return;
-    }
-
-    let manager: BleManager;
-
-    try {
-      manager = new BleManager();
-      managerRef.current = manager;
-    } catch {
-      setError('Bluetooth requires a development or production build; it is not available in Expo Go.');
-      return;
-    }
-
-    const stateSubscription = manager.onStateChange(setAdapterState, true);
-
-    return () => {
-      if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
-      if (rssiTimerRef.current) clearInterval(rssiTimerRef.current);
-      monitorSubscriptionRef.current?.remove();
-      disconnectSubscriptionRef.current?.remove();
-      stateSubscription.remove();
-      void manager.stopDeviceScan().catch(() => undefined);
-      void manager.destroy().catch(() => undefined);
-      managerRef.current = null;
-    };
-  }, []);
-
-  const stopScan = useCallback(async () => {
-    if (scanTimerRef.current) {
-      clearTimeout(scanTimerRef.current);
-      scanTimerRef.current = null;
-    }
-
-    setIsScanning(false);
-
-    if (managerRef.current) {
-      await managerRef.current.stopDeviceScan().catch(() => undefined);
-    }
-  }, []);
-
-  const scan = useCallback(async () => {
-    setError(null);
-    addDiagnosticLog('info', 'Bluetooth scan requested');
-
-    try {
-      const permitted = await requestBluetoothPermission();
-      if (!permitted) {
-        setError('Bluetooth permission is required to show nearby devices.');
-        addDiagnosticLog('warning', 'Bluetooth permission denied');
-        return;
-      }
-
-      const manager = managerRef.current;
-      if (!manager) {
-        setError('Bluetooth is unavailable in this build.');
-        return;
-      }
-
-      const currentState = await manager.state();
-      setAdapterState(currentState);
-
-      if (currentState !== State.PoweredOn) {
-        setError('Turn on Bluetooth, then try scanning again.');
-        addDiagnosticLog('warning', `Bluetooth adapter is ${currentState}`);
-        return;
-      }
-
-      await stopScan();
-      deviceMapRef.current.clear();
-      setDevices([]);
-      setIsScanning(true);
-      addDiagnosticLog('info', 'Scanning for nearby BLE devices');
-
-      await manager.startDeviceScan(null, { allowDuplicates: false }, (scanError, device) => {
-        if (scanError) {
-          setError(scanError.message);
-          addDiagnosticLog('error', 'BLE scan failed', scanError.message);
-          void stopScan();
-          return;
-        }
-
-        if (!device) return;
-
-        deviceMapRef.current.set(device.id, device);
-        const nextDevice: BleDeviceOption = {
-          id: device.id,
-          name: device.name ?? device.localName ?? 'Unnamed BLE device',
-          rssi: device.rssi,
-        };
-
-        setDevices((currentDevices) => {
-          const nextDevices = currentDevices.filter((item) => item.id !== nextDevice.id);
-          nextDevices.push(nextDevice);
-
-          return nextDevices.sort((left, right) => {
-            if (left.name === 'PrecisionShot') return -1;
-            if (right.name === 'PrecisionShot') return 1;
-            return (right.rssi ?? -999) - (left.rssi ?? -999);
-          });
-        });
-      });
-
-      scanTimerRef.current = setTimeout(() => {
-        void stopScan();
-      }, SCAN_DURATION_MS);
-    } catch (scanError) {
-      setError(getErrorMessage(scanError));
-      addDiagnosticLog('error', 'BLE scan failed', getErrorMessage(scanError));
-      await stopScan();
-    }
-  }, [addDiagnosticLog, stopScan]);
-
-  const disconnect = useCallback(async () => {
-    const manager = managerRef.current;
-    const deviceId = connectedDevice?.id;
-
-    monitorSubscriptionRef.current?.remove();
-    monitorSubscriptionRef.current = null;
-    disconnectSubscriptionRef.current?.remove();
-    disconnectSubscriptionRef.current = null;
-    if (rssiTimerRef.current) clearInterval(rssiTimerRef.current);
-    rssiTimerRef.current = null;
-    setConnectedDevice(null);
-    setConnectionState('idle');
-    addDiagnosticLog('info', 'Disconnect requested by user');
-
-    if (manager && deviceId) {
-      await manager.cancelDeviceConnection(deviceId).catch(() => undefined);
-    }
-  }, [addDiagnosticLog, connectedDevice?.id]);
-
-  const connect = useCallback(
-    async (deviceId: string) => {
-      setError(null);
-      await stopScan();
-
-      const manager = managerRef.current;
-      const device = deviceMapRef.current.get(deviceId);
-
-      if (!manager || !device) {
-        setError('That device is no longer available. Scan again and retry.');
-        return;
-      }
-
-      try {
-        if (connectedDevice && connectedDevice.id !== deviceId) {
-          await disconnect();
-        }
-
-        packetTimesRef.current = [];
-        setDiagnostics(createEmptyDiagnostics());
-        setConnectionState('connecting');
-        addDiagnosticLog('info', 'Opening BLE connection', device.name ?? deviceId);
-        const connected = await device.connect({ timeout: 10_000 });
-        addDiagnosticLog('info', 'BLE link established; discovering services');
-        const ready = await connected.discoverAllServicesAndCharacteristics();
-        const services = await ready.services();
-
-        if (!services.some((service) => service.uuid.toLowerCase() === SERVICE_UUID)) {
-          throw new Error('This device does not provide the PrecisionShot Bluetooth service.');
-        }
-
-        const nextConnectedDevice: BleDeviceOption = {
-          id: ready.id,
-          name: ready.name ?? ready.localName ?? 'Unnamed BLE device',
-          rssi: ready.rssi,
-        };
-
-        const characteristics = await ready.characteristicsForService(SERVICE_UUID);
-        const txCharacteristic = characteristics.find(
-          (characteristic) => characteristic.uuid.toLowerCase() === TX_UUID,
-        );
-
-        if (!txCharacteristic?.isNotifiable && !txCharacteristic?.isIndicatable) {
-          throw new Error('The PrecisionShot transmit characteristic cannot send notifications.');
-        }
-
-        const connectedAt = Date.now();
-        setDiagnostics((current) => ({
-          ...current,
-          characteristicCount: characteristics.length,
-          connectedAt,
-          mtu: ready.mtu ?? null,
-          rssi: ready.rssi,
-          servicesDiscovered: services.length,
-        }));
-        addDiagnosticLog(
-          'info',
-          'Service discovery complete',
-          `${services.length} services, ${characteristics.length} PrecisionShot characteristics, MTU ${ready.mtu}`,
-        );
-
-        monitorSubscriptionRef.current?.remove();
-        monitorSubscriptionRef.current = ready.monitorCharacteristicForService(
-          SERVICE_UUID,
-          TX_UUID,
-          (monitorError, characteristic) => {
-            if (monitorError) {
-              setError(monitorError.message);
-              addDiagnosticLog('error', 'Notification monitor error', monitorError.message);
-              return;
-            }
-
-            const base64Value = characteristic?.value ?? null;
-            const rawValue = base64Value ? decodeBase64Ascii(base64Value) : '';
-            const packet = parsePrecisionShotPacket(base64Value);
-            const receivedAt = Date.now();
-            const isDiagnosticMessage =
-              !packet &&
-              rawValue.length > 0 &&
-              /^[\x09\x0A\x0D\x20-\x7E]+$/.test(rawValue) &&
-              !rawValue.trim().startsWith('{');
-
-            packetTimesRef.current = [...packetTimesRef.current, receivedAt].filter(
-              (timestamp) => receivedAt - timestamp <= 60_000,
-            );
-
-            const entry: BleDiagnosticLog = {
-              id: ++diagnosticLogIdRef.current,
-              timestamp: receivedAt,
-              level: packet ? 'data' : isDiagnosticMessage ? 'info' : 'warning',
-              message: packet
-                ? `Shot packet: hit ${packet.hit}, score ${packet.score}`
-                : isDiagnosticMessage
-                  ? 'Device diagnostic message'
-                  : 'Unrecognized packet',
-              detail: formatLogDetail(rawValue),
-            };
-
-            setDiagnostics((current) => ({
-              ...current,
-              bytesReceived: current.bytesReceived + rawValue.length,
-              diagnosticMessages: current.diagnosticMessages + (isDiagnosticMessage ? 1 : 0),
-              lastBase64Value: base64Value,
-              lastPacketAt: receivedAt,
-              lastRawValue: formatLogDetail(rawValue),
-              logs: [entry, ...current.logs].slice(0, MAX_DIAGNOSTIC_LOGS),
-              malformedPackets: current.malformedPackets + (!packet && !isDiagnosticMessage ? 1 : 0),
-              notificationsReceived: current.notificationsReceived + 1,
-              packetsLastMinute: packetTimesRef.current.length,
-              shotPackets: current.shotPackets + (packet ? 1 : 0),
-            }));
-
-            if (packet) onShotRef.current(packet);
-          },
-        );
-        addDiagnosticLog('info', 'Subscribed to PrecisionShot notifications', TX_UUID);
-
-        disconnectSubscriptionRef.current?.remove();
-        disconnectSubscriptionRef.current = manager.onDeviceDisconnected(ready.id, (disconnectError) => {
-          monitorSubscriptionRef.current?.remove();
-          monitorSubscriptionRef.current = null;
-          if (rssiTimerRef.current) clearInterval(rssiTimerRef.current);
-          rssiTimerRef.current = null;
-          setConnectedDevice(null);
-          setConnectionState('idle');
-
-          if (disconnectError) {
-            setError(disconnectError.message);
-            addDiagnosticLog('error', 'Device disconnected unexpectedly', disconnectError.message);
-          } else {
-            addDiagnosticLog('warning', 'Device disconnected');
-          }
-        });
-
-        setConnectedDevice(nextConnectedDevice);
-        setConnectionState('connected');
-        addDiagnosticLog('info', 'PrecisionShot is ready and listening');
-
-        const refreshRssi = async () => {
-          try {
-            const refreshedDevice = await ready.readRSSI();
-            const refreshedAt = Date.now();
-            packetTimesRef.current = packetTimesRef.current.filter(
-              (timestamp) => refreshedAt - timestamp <= 60_000,
-            );
-            setConnectedDevice((current) =>
-              current?.id === refreshedDevice.id ? { ...current, rssi: refreshedDevice.rssi } : current,
-            );
-            setDiagnostics((current) => ({
-              ...current,
-              packetsLastMinute: packetTimesRef.current.length,
-              rssi: refreshedDevice.rssi,
-            }));
-          } catch (rssiError) {
-            addDiagnosticLog('warning', 'Could not refresh signal strength', getErrorMessage(rssiError));
-          }
-        };
-
-        void refreshRssi();
-        if (rssiTimerRef.current) clearInterval(rssiTimerRef.current);
-        rssiTimerRef.current = setInterval(() => void refreshRssi(), RSSI_POLL_INTERVAL_MS);
-      } catch (connectError) {
-        setConnectionState('idle');
-        setConnectedDevice(null);
-        setError(
-          `${getErrorMessage(connectError)} Make sure you selected the PrecisionShot target and try again.`,
-        );
-        addDiagnosticLog('error', 'Connection failed', getErrorMessage(connectError));
-        await manager.cancelDeviceConnection(deviceId).catch(() => undefined);
-      }
-    },
-    [addDiagnosticLog, connectedDevice, disconnect, stopScan],
-  );
-
-  return {
-    adapterState,
-    bleServiceUuid: SERVICE_UUID,
-    bleTxUuid: TX_UUID,
-    clearError: () => setError(null),
-    connect,
-    connectedDevice,
-    connectionState,
-    diagnostics,
-    devices,
-    disconnect,
-    error,
-    isScanning,
-    scan,
-    clearDiagnosticLogs: () => setDiagnostics((current) => ({ ...current, logs: [] })),
-  };
 }
