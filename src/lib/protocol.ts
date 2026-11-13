@@ -3,9 +3,20 @@ export const SERVICE_UUID = '8c7a0001-6c3b-4f3d-a8d9-2adbc9f10211';
 export const TX_UUID = '8c7a0002-6c3b-4f3d-a8d9-2adbc9f10211';
 export const RX_UUID = '8c7a0003-6c3b-4f3d-a8d9-2adbc9f10211';
 
+export const RAPID_SHOTS = 10;
+
+type RapidState = {
+    phase: 'READY' | 'COUNTDOWN' | 'ACTIVE' | 'COMPLETE';
+    countdown: number;
+    cueSensor: number | null;
+    responseMs: number | null;
+    averageMs: number | null;
+    bestMs: number | null;
+};
+
 export type BoardState = {
     revision: number;
-    mode: 'CLASSIC' | 'FREESTYLE';
+    mode: 'RAPID' | 'FREESTYLE' | 'CLASSIC';
     shots: number;
     remaining: number;
     total: number;
@@ -13,7 +24,7 @@ export type BoardState = {
     distanceMillimeters: number;
     unit: 'M' | 'FT';
     sensitivity: number;
-    page: 'TRAINING' | 'SETTINGS' | 'DEBUGZONE' | 'DEBUG';
+    page: 'TRAINING' | 'SETTINGS' | 'DEBUGZONE' | 'DEBUG' | 'GRID' | 'SENSORGRAPH';
     fullscreen: boolean;
     theme: 'DARK' | 'LIGHT';
     view: 'PAYLOAD' | 'HEX' | 'BINARY';
@@ -27,6 +38,8 @@ export type BoardState = {
     sensorRaw: number | null;
     sensorMillivolts: number | null;
     sensorDetected: boolean;
+    rapid: RapidState | null;
+    lastHitSensor: number | null;
 };
 export type ShotPacket = { hit: number; score: number; x?: number; y?: number };
 const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
@@ -100,6 +113,23 @@ function choice<T extends string>(text: string | undefined, options: readonly T[
     return text as T;
 }
 
+function readRapid(fields: Record<string, string>): RapidState | null {
+    const keys = ['RPHASE', 'RCOUNT', 'CUE', 'LASTPT', 'RTMS', 'RAVG', 'RBEST'];
+    if (!keys.some((key) => fields[key] !== undefined)) return null;
+    const time = (key: string) => {
+        const ms = integer(fields[key], -1, 0xffffffff);
+        return ms === -1 ? null : ms;
+    };
+    return {
+        phase: choice(fields.RPHASE, ['READY', 'COUNTDOWN', 'ACTIVE', 'COMPLETE']),
+        countdown: integer(fields.RCOUNT, 0, 3),
+        cueSensor: integer(fields.CUE, 0, 16) || null,
+        responseMs: time('RTMS'),
+        averageMs: time('RAVG'),
+        bestMs: time('RBEST'),
+    };
+}
+
 // Only publish a snapshot after every field and its matching END arrive.
 export class SnapshotReader {
     private revision: number | null = null;
@@ -136,9 +166,10 @@ export class SnapshotReader {
             if (sensorCount !== 0 && sensorCount !== sensorFields.length) return null;
             integer(f.PROTO, 2, 2);
             const last = integer(f.LAST, -1, 10);
+            const rapid = readRapid(f);
             const state: BoardState = {
                 revision: this.revision,
-                mode: choice(f.MODE, ['CLASSIC', 'FREESTYLE']),
+                mode: choice(f.MODE, ['RAPID', 'FREESTYLE', 'CLASSIC']),
                 shots: integer(f.SHOTS, 0, 0xffffffff),
                 remaining: integer(f.LEFT, 0, 10),
                 total: integer(f.TOTAL, 0, 0xffffffff),
@@ -146,7 +177,7 @@ export class SnapshotReader {
                 distanceMillimeters: integer(f.DIST, 1000, 100000),
                 unit: choice(f.UNIT, ['M', 'FT']),
                 sensitivity: integer(f.CAL, 0, 4095),
-                page: choice(f.PAGE, ['TRAINING', 'SETTINGS', 'DEBUGZONE', 'DEBUG']),
+                page: choice(f.PAGE, ['TRAINING', 'SETTINGS', 'DEBUGZONE', 'DEBUG', 'GRID', 'SENSORGRAPH']),
                 fullscreen: integer(f.FULL, 0, 1) === 1,
                 theme: choice(f.THEME, ['DARK', 'LIGHT']),
                 view: choice(f.VIEW, ['PAYLOAD', 'HEX', 'BINARY']),
@@ -160,10 +191,25 @@ export class SnapshotReader {
                 sensorRaw: measurement(f.ADC, 4095),
                 sensorMillivolts: measurement(f.MV, 5000),
                 sensorDetected: f.DETECT === undefined ? false : integer(f.DETECT, 0, 1) === 1,
+                rapid,
+                lastHitSensor: rapid ? integer(f.LASTPT, 0, 16) || null : null,
             };
             if (!parseShot(state.packet)) return null;
-            const expectedLeft = state.mode === 'CLASSIC' ? Math.max(0, 10 - state.shots) : 0;
-            if (state.remaining !== expectedLeft || (state.shots === 0) !== (last === -1))
+            const counted = state.mode !== 'FREESTYLE';
+            const expectedLeft = counted ? Math.max(0, RAPID_SHOTS - state.shots) : 0;
+            if (state.remaining !== expectedLeft || (counted && (state.shots === 0) !== (last === -1)))
+                return null;
+            if (state.mode === 'RAPID' && state.shots > RAPID_SHOTS) return null;
+            if (state.lastHitSensor !== null && state.lastScore === null) return null;
+            if (rapid && (
+                (rapid.phase === 'COUNTDOWN') !== (rapid.countdown > 0) ||
+                (rapid.phase === 'ACTIVE') !== (rapid.cueSensor !== null) ||
+                (rapid.phase === 'COMPLETE') !== (rapid.averageMs !== null) ||
+                (state.mode !== 'RAPID' && (rapid.phase !== 'READY' || rapid.responseMs !== null)) ||
+                (state.mode === 'RAPID' &&
+                    ((rapid.phase === 'COMPLETE') !== (state.shots === RAPID_SHOTS) ||
+                     (state.shots > 0) !== (rapid.responseMs !== null)))
+            ))
                 return null;
             return state;
         } catch {
@@ -172,6 +218,12 @@ export class SnapshotReader {
             this.reset();
         }
     }
+}
+
+export function formatResponse(ms: number | null | undefined) {
+    if (ms == null) return '—';
+    if (ms > 10_000) return '10+ s';
+    return `${(Math.floor((ms + 5) / 10) / 100).toFixed(2)} s`;
 }
 
 export function formatDistance(state: BoardState) {

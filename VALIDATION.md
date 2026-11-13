@@ -1,3 +1,29 @@
+# Circular target zones in both modes — November 12, 2026
+
+- Installed the signed Android release on the Samsung. A fresh app launch
+  restored BLE after the first connection timed out following installation.
+- Checked all 16 circles in both modes on the phone, including a live Rapid
+  cue, cancellation, and a Freestyle simulated score without a zone highlight.
+- TypeScript and all 12 protocol tests passed. Firmware host snapshots also
+  selected the matching circle for every Rapid cue and Freestyle hit.
+  Physical hit testing still requires the sensor board.
+
+# Initial Rapid and Freestyle target layouts — November 12, 2026
+
+- TypeScript and all 12 protocol tests passed. The Android parser accepted
+  24 firmware-generated snapshots, including countdown, all 16 cues, round
+  completion, and Freestyle hit location. The rendered Rapid component
+  selected the correct tile for each of the 16 cues.
+- Built the standalone arm64 APK with JDK 17, verified the existing signing
+  certificate, and installed the update on Samsung SM-S908U1.
+- On the Samsung, verified the 4 × 4 Rapid grid, the live PT9 cue, cancellation,
+  the four Freestyle zones, simulated scoring, and reset. Also checked BLE sync
+  and reconnection, fullscreen, distance and sensitivity, meters and feet, live
+  diagnostic readings, and Session Debug payload and hex views. Restored the
+  original settings and left the app connected in Rapid.
+- The sensor board was disconnected, so a physical ten-hit round still
+  requires verification.
+
 # Checks — October 5, 2026
 
 - TypeScript checking and six protocol test groups passed. These cover Base64,

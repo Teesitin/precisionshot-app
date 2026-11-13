@@ -3,16 +3,19 @@
 This is the phone app for our ESP32-S3 target. It uses Expo, React Native, and
 Bluetooth. The board keeps the scores and settings, and the app shows its updates.
 
-- **Freestyle:** keep shooting and show the latest score.
-- **Classic:** ten shots, then a total out of 100.
-- **Rapid:** shown at the top, but disabled for now.
-- **Simulate shot / Reset:** send commands to the board.
+- **Rapid (default):** start or cancel a ten-hit round from the phone. The
+  board sends the countdown, current cue, hit count, response time, round
+  average, and best average. The 4 × 4 grid highlights the cued sensor.
+- **Freestyle:** show the latest score and highlight the sensor that registered
+  the hit on the same 16-circle grid.
+- **Simulate shot / Reset:** test Freestyle scoring or clear the current round.
 - **Settings:** connect Bluetooth, change distance, units, sensitivity, and theme.
-- **Debug Zone:** Session Debug, packet views, speaker test, and four animations.
+- **Debug Zone:** live readings, Session Debug, packet views, and a shortcut to
+  the onboard GRID.
 
 The Settings switch **Enable debug information** shows diagnostics at the bottom
-of the training screen. It starts off. There is no sensor board yet, so the target
-does not invent hit positions. The test scores cycle through 10, 9, 8, and 7.
+of the training screen. It starts off. Simulated Freestyle shots cycle through
+10, 9, 8, and 7 and leave the zones unmarked.
 
 ## Run it
 

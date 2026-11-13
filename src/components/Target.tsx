@@ -1,55 +1,60 @@
 import { StyleSheet, Text, View } from 'react-native';
+import type { Palette } from '@/components/controls';
 
-// The board sends scores, but it does not send sensor positions yet.
-export function Target({ size }: { size: number }) {
+const sensors = Array.from({ length: 16 }, (_, index) => index + 1);
+
+export function Target({
+    size,
+    highlightedSensor,
+    highlightLabel,
+    colors,
+}: {
+    size: number;
+    highlightedSensor: number | null;
+    highlightLabel: 'Cue' | 'Hit';
+    colors: Palette;
+}) {
     return (
-        <View
-            accessibilityRole="image"
-            accessibilityLabel="Ten-ring shooting target"
-            style={[styles.target, { width: size, height: size }]}
-        >
-            {Array.from({ length: 10 }, (_, index) => {
-                const diameter = (size * (10 - index)) / 10;
-                return (
-                    <View
-                        key={index}
-                        style={[
-                            styles.ring,
-                            {
-                                width: diameter,
-                                height: diameter,
-                                borderRadius: diameter / 2,
-                                backgroundColor:
-                                    index < 4 ? '#EEECE3' : index === 9 ? '#EFB96A' : '#24373B',
-                                borderColor: index < 4 ? '#83918A' : '#A0AAA4',
-                            },
-                        ]}
-                    />
-                );
-            })}
-            <View style={[styles.cross, { width: size * 0.15, height: 1 }]} />
-            <View style={[styles.cross, { width: 1, height: size * 0.15 }]} />
-            {[2, 4, 6, 8].map((score) => (
-                <Text
-                    key={score}
-                    style={[
-                        styles.number,
-                        {
-                            top: (size * (score - 0.5)) / 20 - 5,
-                            color: score <= 4 ? '#4B5D59' : '#CFD5CF',
-                        },
-                    ]}
-                >
-                    {score}
-                </Text>
+        <View style={[styles.target, { width: size }]} accessibilityLabel="Sixteen target zones">
+            {[0, 4, 8, 12].map((start) => (
+                <View style={styles.row} key={start}>
+                    {sensors.slice(start, start + 4).map((sensor) => {
+                        const active = sensor === highlightedSensor;
+                        return (
+                            <View
+                                key={sensor}
+                                accessible
+                                accessibilityLabel={`Zone ${sensor}${active ? `, ${highlightLabel} · PT${sensor}` : ''}`}
+                                style={[
+                                    styles.zone,
+                                    {
+                                        backgroundColor: active ? colors.accent : colors.surface,
+                                        borderColor: active ? colors.accent : colors.line,
+                                    },
+                                ]}
+                            >
+                                <Text style={[styles.number, { color: active ? colors.onAccent : colors.text }]}>
+                                    {String(sensor).padStart(2, '0')}
+                                </Text>
+                            </View>
+                        );
+                    })}
+                </View>
             ))}
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    target: { alignItems: 'center', justifyContent: 'center', alignSelf: 'center' },
-    ring: { position: 'absolute', borderWidth: 1 },
-    cross: { position: 'absolute', backgroundColor: '#3C443C' },
-    number: { position: 'absolute', fontSize: 10, fontWeight: '600' },
+    target: { alignSelf: 'center', gap: 10 },
+    row: { flexDirection: 'row', gap: 10 },
+    zone: {
+        flex: 1,
+        aspectRatio: 1,
+        borderRadius: 999,
+        borderWidth: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    number: { fontSize: 17, fontWeight: '700' },
 });

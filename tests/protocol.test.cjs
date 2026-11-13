@@ -10,7 +10,7 @@ const source = ts.transpileModule(fs.readFileSync('src/lib/protocol.ts', 'utf8')
 }).outputText;
 const loaded = new Module('protocol');
 loaded._compile(source, 'protocol.js');
-const { SnapshotReader, encodeAscii, decodeAscii, parseShot } = loaded.exports;
+const { SnapshotReader, encodeAscii, decodeAscii, parseShot, formatResponse } = loaded.exports;
 const fields = [
     'PROTO:2',
     'MODE:CLASSIC',
@@ -146,4 +146,72 @@ test('empty sessions and full 32-bit totals are represented correctly', () => {
             })[f] ?? f,
     );
     assert.equal(snapshot(new SnapshotReader(), large).total, 0xffffffff);
+});
+
+function firmwareState(overrides = {}) {
+    const base = Object.fromEntries(fields.map((field) => {
+        const at = field.indexOf(':');
+        return [field.slice(0, at), field.slice(at + 1)];
+    }));
+    return Object.entries({
+        ...base, MODE: 'RAPID', SHOTS: 0, LEFT: 10, TOTAL: 0, LAST: -1,
+        RPHASE: 'READY', RCOUNT: 0, CUE: 0, LASTPT: 0, RTMS: -1, RAVG: -1, RBEST: -1,
+        ...overrides,
+    }).map(([key, value]) => `${key}:${value}`);
+}
+
+test('Rapid follows the board countdown, active cue, completed result, and reset', () => {
+    const reader = new SnapshotReader();
+    assert.equal(snapshot(reader, firmwareState(), 1).rapid.phase, 'READY');
+    const countdown = snapshot(reader, firmwareState({ RPHASE: 'COUNTDOWN', RCOUNT: 3 }), 2);
+    assert.equal(countdown.rapid.countdown, 3);
+    const active = snapshot(reader, firmwareState({
+        RPHASE: 'ACTIVE', CUE: 6, LASTPT: 11, RTMS: 3230, SHOTS: 1, LEFT: 9, LAST: 10,
+    }), 3);
+    assert.equal(active.rapid.cueSensor, 6);
+    assert.equal(active.lastHitSensor, 11);
+    assert.equal(active.remaining, 9);
+    assert.equal(formatResponse(active.rapid.responseMs), '3.23 s');
+    assert.equal(formatResponse(1005), '1.01 s');
+    assert.equal(formatResponse(10_000), '10.00 s');
+    const complete = snapshot(reader, firmwareState({
+        RPHASE: 'COMPLETE', LASTPT: 6, RTMS: 10010, RAVG: 3908, RBEST: 3800,
+        SHOTS: 10, LEFT: 0, LAST: 10,
+    }), 4);
+    assert.equal(formatResponse(complete.rapid.responseMs), '10+ s');
+    assert.equal(formatResponse(complete.rapid.averageMs), '3.91 s');
+    assert.equal(snapshot(reader, firmwareState({ RBEST: 3800 }), 5).rapid.bestMs, 3800);
+});
+
+test('Rapid receives all 16 distinct sensor cues', () => {
+    const reader = new SnapshotReader();
+    for (let sensor = 1; sensor <= 16; sensor++) {
+        const active = snapshot(reader, firmwareState({ RPHASE: 'ACTIVE', CUE: sensor }), sensor);
+        assert.equal(active.rapid.cueSensor, sensor);
+    }
+});
+
+test('Freestyle receives all 16 sensor positions and simulated hits have no position', () => {
+    const reader = new SnapshotReader();
+    const freestyle = { MODE: 'FREESTYLE', LEFT: 0, LAST: 8 };
+    for (let sensor = 1; sensor <= 16; sensor++) {
+        const state = snapshot(reader, firmwareState({ ...freestyle, LASTPT: sensor }), sensor);
+        assert.equal(state.lastHitSensor, sensor);
+    }
+    assert.equal(snapshot(reader, firmwareState(freestyle), 17).lastHitSensor, null);
+    assert.equal(snapshot(new SnapshotReader(), firmwareState({ ...freestyle, PAGE: 'GRID' })).page, 'GRID');
+    assert.equal(snapshot(new SnapshotReader(), firmwareState({ ...freestyle, PAGE: 'SENSORGRAPH' })).page, 'SENSORGRAPH');
+});
+
+test('partial or inconsistent Rapid frames do not replace the current UI', () => {
+    const invalid = [
+        firmwareState().filter((line) => !line.startsWith('RBEST:')),
+        firmwareState({ RPHASE: 'ACTIVE', CUE: 0 }),
+        firmwareState({ RPHASE: 'ACTIVE', CUE: 17 }),
+        firmwareState({ RPHASE: 'COUNTDOWN', RCOUNT: 0 }),
+        firmwareState({ RPHASE: 'COMPLETE', SHOTS: 9, LEFT: 1 }),
+    ];
+    for (const data of invalid) assert.equal(snapshot(new SnapshotReader(), data), null);
+    const oldRapid = firmwareState().filter((line) => !/^(RPHASE|RCOUNT|CUE|LASTPT|RTMS|RAVG|RBEST):/.test(line));
+    assert.equal(snapshot(new SnapshotReader(), oldRapid).rapid, null);
 });

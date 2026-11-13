@@ -14,15 +14,14 @@ import { StatusBar } from 'expo-status-bar';
 import { Action, palettes, SettingRow } from '@/components/controls';
 import { Target } from '@/components/Target';
 import { usePrecisionShotBle } from '@/hooks/usePrecisionShotBle';
-import { formatDistance } from '@/lib/protocol';
+import { formatDistance, formatResponse, RAPID_SHOTS, type BoardState } from '@/lib/protocol';
 
 type Panel = 'SETTINGS' | 'DEBUGZONE' | 'DEBUG' | null;
-const effects = [
-    { name: 'Confetti Chaos', tune: 'The Entertainer', command: 'CONFETTI' },
-    { name: 'Cosmic Orbit', tune: 'Greensleeves', command: 'ORBIT' },
-    { name: 'Jelly Bounce', tune: 'Für Elise', command: 'BOUNCE' },
-    { name: 'Warp Speed', tune: 'Mountain King', command: 'WARP' },
-];
+
+function panelForPage(page: BoardState['page'] | undefined): Panel {
+    if (page === 'GRID' || page === 'SENSORGRAPH') return 'DEBUGZONE';
+    return page === 'TRAINING' || !page ? null : page;
+}
 
 export default function TrainingScreen() {
     const [panel, setPanel] = useState<Panel>(null);
@@ -33,7 +32,21 @@ export default function TrainingScreen() {
     const colors = palettes[board?.theme ?? 'DARK'];
     const ready = ble.connectionState === 'connected' && ble.isSynced;
     const disabled = !ready || ble.busy;
-    const complete = board?.mode === 'CLASSIC' && board.remaining === 0;
+    const mode = board?.mode ?? 'RAPID';
+    const rapid = mode === 'RAPID' ? board?.rapid : null;
+    const rapidInProgress = rapid?.phase === 'COUNTDOWN' || rapid?.phase === 'ACTIVE';
+    const roundComplete = rapid?.phase === 'COMPLETE';
+    const rapidStatus = !board
+        ? 'Waiting for board'
+        : !rapid
+          ? 'Update the board for phone round controls'
+          : rapid.phase === 'COUNTDOWN'
+            ? 'Get ready'
+            : rapid.phase === 'ACTIVE'
+              ? 'Aim at the lit sensor'
+              : rapid.phase === 'COMPLETE'
+                ? 'Round complete'
+                : 'Ready to start';
     const fullscreen = board?.fullscreen ?? false;
     const targetSize = Math.min(width - 72, fullscreen ? 340 : 276);
     const packet = board?.packet ?? 'No board packet available';
@@ -48,7 +61,7 @@ export default function TrainingScreen() {
 
     // Opening a screen on the board also opens its matching app panel.
     useEffect(() => {
-        if (boardPage) setPanel(boardPage === 'TRAINING' ? null : boardPage);
+        if (boardPage) setPanel(panelForPage(boardPage));
     }, [boardPage, ble.connectedDevice?.id]);
 
     function run(command: string) {
@@ -64,7 +77,7 @@ export default function TrainingScreen() {
             void ble
                 .sendCommand(`NAV:${next ?? 'TRAINING'}`)
                 .then(() => setPanel(next))
-                .catch(() => setPanel(boardPage === 'TRAINING' ? null : (boardPage ?? null)));
+                .catch(() => setPanel(panelForPage(boardPage)));
         }
     }
 
@@ -94,30 +107,31 @@ export default function TrainingScreen() {
                         { backgroundColor: colors.surface, borderColor: colors.line },
                     ]}
                 >
-                    {(['FREESTYLE', 'CLASSIC', 'RAPID'] as const).map((mode) => (
+                    {(['RAPID', 'FREESTYLE'] as const).map((option) => (
                         <Pressable
-                            key={mode}
+                            key={option}
                             accessibilityRole="tab"
-                            accessibilityLabel={mode[0] + mode.slice(1).toLowerCase()}
+                            accessibilityLabel={option[0] + option.slice(1).toLowerCase()}
                             accessibilityState={{
-                                selected: board?.mode === mode,
-                                disabled: disabled || mode === 'RAPID',
+                                selected: mode === option,
+                                disabled,
                             }}
-                            disabled={disabled || mode === 'RAPID'}
-                            onPress={() => run(`MODE:${mode}`)}
+                            disabled={disabled}
+                            onPress={() => {
+                                if (mode !== option) run(`MODE:${option}`);
+                            }}
                             style={[
                                 styles.tab,
-                                board?.mode === mode && { backgroundColor: colors.accent },
-                                mode === 'RAPID' && { opacity: 0.35 },
+                                mode === option && { backgroundColor: colors.accent },
                             ]}
                         >
                             <Text
                                 style={[
                                     styles.tabText,
-                                    { color: board?.mode === mode ? colors.onAccent : colors.text },
+                                    { color: mode === option ? colors.onAccent : colors.text },
                                 ]}
                             >
-                                {mode[0] + mode.slice(1).toLowerCase()}
+                                {option[0] + option.slice(1).toLowerCase()}
                             </Text>
                         </Pressable>
                     ))}
@@ -143,7 +157,12 @@ export default function TrainingScreen() {
                         </Text>
                     </Pressable>
                 </View>
-                <Target size={targetSize} />
+                <Target
+                    size={targetSize}
+                    highlightedSensor={(mode === 'RAPID' ? rapid?.cueSensor : board?.lastHitSensor) ?? null}
+                    highlightLabel={mode === 'RAPID' ? 'Cue' : 'Hit'}
+                    colors={colors}
+                />
                 <View
                     style={[
                         styles.latest,
@@ -152,10 +171,16 @@ export default function TrainingScreen() {
                 >
                     <View style={styles.latestTop}>
                         <Text style={[styles.caption, { color: colors.muted }]}>
-                            {complete ? 'SESSION TOTAL' : 'LATEST SHOT'}
+                            {mode === 'RAPID'
+                                ? rapid?.phase === 'COUNTDOWN'
+                                    ? 'STARTING IN'
+                                    : roundComplete ? 'ROUND AVERAGE' : 'RESPONSE TIME'
+                                : 'LATEST SHOT'}
                         </Text>
                         <Text style={[styles.small, { color: colors.muted }]}>
-                            {board?.lastScore !== null && ble.lastShot
+                            {mode === 'RAPID'
+                                ? `${board?.shots ?? 0} / ${RAPID_SHOTS} hits`
+                                : board?.lastScore != null && ble.lastShot
                                 ? new Date(ble.lastShot.time).toLocaleTimeString([], {
                                       hour: '2-digit',
                                       minute: '2-digit',
@@ -163,34 +188,37 @@ export default function TrainingScreen() {
                                 : '—'}
                         </Text>
                     </View>
-                    <Text style={[styles.score, { color: colors.accent }]}>
-                        {complete ? board.total : (board?.lastScore ?? '—')}
-                        <Text style={[styles.scoreSuffix, { color: colors.muted }]}>
-                            {' '}
-                            / {complete ? 100 : 10}
-                        </Text>
+                    <Text accessibilityLiveRegion="polite" style={[styles.score, { color: colors.accent }]}>
+                        {mode === 'RAPID'
+                            ? rapid?.phase === 'COUNTDOWN'
+                                ? rapid.countdown
+                                : formatResponse(roundComplete ? rapid?.averageMs : rapid?.responseMs)
+                            : (board?.lastScore ?? '—')}
+                        {mode !== 'RAPID' && (
+                            <Text style={[styles.scoreSuffix, { color: colors.muted }]}> / 10</Text>
+                        )}
                     </Text>
                     <View style={styles.latestTop}>
                         <Text style={[styles.small, { color: colors.text }]}>
-                            {board
-                                ? board.mode === 'CLASSIC'
-                                    ? `${board.remaining} shots left`
-                                    : `${board.shots} shots`
-                                : 'Waiting for board'}
+                            {mode === 'RAPID' ? rapidStatus : 'Freestyle score'}
                         </Text>
                         <Text style={[styles.small, { color: colors.muted }]}>
-                            {complete
-                                ? 'Next shot starts a new session'
-                                : `Total ${board?.total ?? '—'}`}
+                            {mode === 'RAPID'
+                                ? `Best ${formatResponse(rapid?.bestMs)}`
+                                : board?.lastHitSensor ? `PT${board.lastHitSensor}` : ''}
                         </Text>
                     </View>
                 </View>
                 <View style={styles.actions}>
                     <Action
-                        label="Simulate shot"
+                        label={mode === 'RAPID'
+                            ? rapidInProgress ? 'Cancel round' : 'Start round'
+                            : 'Simulate shot'}
                         primary
-                        onPress={() => run('TEST')}
-                        disabled={disabled}
+                        onPress={() => run(mode === 'RAPID'
+                            ? rapidInProgress ? 'RAPID:CANCEL' : 'RAPID:START'
+                            : 'TEST')}
+                        disabled={disabled || (mode === 'RAPID' && !rapid) || mode === 'CLASSIC'}
                         colors={colors}
                         style={styles.grow}
                     />
@@ -231,9 +259,6 @@ export default function TrainingScreen() {
                         <Text style={[styles.small, { color: colors.muted }]}>
                             {ble.notifications} notifications · State {board?.revision ?? '—'} ·{' '}
                             {board?.page ?? '—'}
-                        </Text>
-                        <Text style={[styles.small, { color: colors.muted }]}>
-                            Sensor positions are not available yet.
                         </Text>
                         {ble.logs.slice(0, 6).map((entry) => (
                             <Text
@@ -463,20 +488,14 @@ export default function TrainingScreen() {
                                         onPress={() => open('SETTINGS')}
                                         colors={colors}
                                     />
-                                    <Text style={[styles.small, { color: colors.muted }]}>
-                                        Play animations and their public domain tunes on the board.
-                                    </Text>
-                                    {effects.map((effect) => (
-                                        <Action
-                                            key={effect.command}
-                                            label={`${effect.name} · ${effect.tune}`}
-                                            onPress={() => run(`FX:${effect.command}`)}
-                                            disabled={disabled}
-                                            colors={colors}
-                                        />
-                                    ))}
                                     <Action
-                                        label="Stop sound and animation"
+                                        label="Show GRID on board"
+                                        onPress={() => run('NAV:GRID')}
+                                        disabled={disabled}
+                                        colors={colors}
+                                    />
+                                    <Action
+                                        label="Stop sound"
                                         onPress={() => run('FX:STOP')}
                                         disabled={disabled}
                                         colors={colors}
@@ -536,13 +555,12 @@ export default function TrainingScreen() {
                                             : `Packet status: ${board?.delivery.toLowerCase() ?? 'disconnected'}`}
                                     </Text>
                                     <Text style={[styles.small, { color: colors.muted }]}>
-                                        Board mode {board?.mode ?? '—'} · {board?.shots ?? 0} shots
-                                        · Total {board?.total ?? 0}
+                                        Board mode {board?.mode ?? '—'} · {board?.shots ?? 0} round hits
                                     </Text>
                                     <Action
                                         label="Simulate shot"
                                         onPress={() => run('TEST')}
-                                        disabled={disabled}
+                                        disabled={disabled || mode !== 'FREESTYLE'}
                                         colors={colors}
                                     />
                                     {ble.logs.slice(0, 12).map((entry) => (
